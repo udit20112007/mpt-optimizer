@@ -6,8 +6,7 @@ and constrained optimization (SciPy SLSQP) applied to the Markowitz
 Efficient Frontier.
 
 Universe: Top 100 US stocks, Top 100 India (NSE) stocks, Top 50 US mutual
-funds, and Top 50 India-listed ETFs (substituted for Indian mutual funds,
-since Yahoo Finance/yfinance does not carry AMFI mutual fund NAV data).
+funds, and Top 50 India-listed ETFs.
 
 A hard cap of 100 assets per optimization run is enforced regardless of
 how many are selected, to keep Monte Carlo + SLSQP runtime and Yahoo
@@ -48,7 +47,7 @@ st.caption("Markowitz Efficient Frontier \u00b7 Monte Carlo Simulation \u00b7 SL
 
 MAX_ASSETS = 100  # hard cap per optimization run
 
-# ---------------- Static universes (each verified to contain exactly N tickers) ----------------
+# ---------------- Static universes ----------------
 US_TOP100 = {
     "NVDA": "NVIDIA", "AAPL": "Apple", "GOOGL": "Alphabet", "MSFT": "Microsoft",
     "AMZN": "Amazon.com", "AVGO": "Broadcom", "TSLA": "Tesla", "META": "Meta Platforms",
@@ -110,7 +109,6 @@ INDIA_TOP100 = {
     "LTIM.NS": "LTIMindtree", "PERSISTENT.NS": "Persistent Systems", "COFORGE.NS": "Coforge Ltd",
     "OBEROIRLTY.NS": "Oberoi Realty", "DLF.NS": "DLF Ltd", "GODREJPROP.NS": "Godrej Properties",
     "INDIGO.NS": "InterGlobe Aviation", "JUBLFOOD.NS": "Jubilant FoodWorks", "POLYCAB.NS": "Polycab India",
-    "ASTRAL.NS": "Astral Ltd", "SRF.NS": "SRF Ltd", "UPL.NS": "UPL Ltd", "PIIND.NS": "PI Industries",
 }
 
 US_FUNDS_50 = {
@@ -126,7 +124,7 @@ US_FUNDS_50 = {
     "VPMAX": "Vanguard PRIMECAP", "FDGRX": "Fidelity Growth Company", "FBGRX": "Fidelity Blue Chip Growth", "FLPSX": "Fidelity Low-Priced Stock",
     "FDVLX": "Fidelity Value", "FMAGX": "Fidelity Magellan", "FSKAX": "Fidelity Total Market Index", "FTIHX": "Fidelity Total International Index",
     "FSPGX": "Fidelity Large Cap Growth Index", "FXNAX": "Fidelity US Bond Index", "JABAX": "Janus Henderson Balanced", "JAENX": "Janus Henderson Enterprise",
-    "MEIKX": "MFS Massachusetts Investors Trust", "OAKBX": "Oakmark Equity & Income", "PRGFX": "T. Rowe Price Growth Stock", "PRWCX": "T. Rowe Price Capital Appreciation",
+    "MEIKX": "MFS Massachusetts Investors Trust", "OAKBX": "Oakmark Equity & Income",
 }
 
 INDIA_ETFS_50 = {
@@ -145,10 +143,16 @@ INDIA_ETFS_50 = {
     "CONSUMBEES.NS": "Nippon India ETF Nifty India Consumption", "PHARMABEES.NS": "Nippon India ETF Nifty Pharma", "METALIETF.NS": "ICICI Prudential Nifty Metal ETF", "FMCGIETF.NS": "ICICI Prudential Nifty FMCG ETF",
 }
 
-assert len(US_TOP100) == 100, f"US_TOP100 has {len(US_TOP100)} entries, expected 100"
-assert len(INDIA_TOP100) == 100, f"INDIA_TOP100 has {len(INDIA_TOP100)} entries, expected 100"
-assert len(US_FUNDS_50) == 50, f"US_FUNDS_50 has {len(US_FUNDS_50)} entries, expected 50"
-assert len(INDIA_ETFS_50) == 50, f"INDIA_ETFS_50 has {len(INDIA_ETFS_50)} entries, expected 50"
+# Runtime safety net: if any universe list is ever edited and its count
+# drifts, fail gracefully with a clear in-app message naming the exact
+# dict, rather than crashing the whole page with a raw traceback.
+_universe_sizes = {"US_TOP100": (US_TOP100, 100), "INDIA_TOP100": (INDIA_TOP100, 100),
+                    "US_FUNDS_50": (US_FUNDS_50, 50), "INDIA_ETFS_50": (INDIA_ETFS_50, 50)}
+for _name, (_d, _expected) in _universe_sizes.items():
+    if len(_d) != _expected:
+        st.error(f"Configuration error: {_name} has {len(_d)} entries, expected {_expected}. "
+                 "Please report this \u2014 the app cannot run correctly until this list is fixed.")
+        st.stop()
 
 ALL_UNIVERSES = {
     "Top 100 US Stocks": US_TOP100,
@@ -380,12 +384,7 @@ if run_btn:
     corr_full = log_returns.corr()
     corr = corr_full.values
 
-    # ---------------- Data synopsis ----------------
     st.subheader("\U0001F4CB Data Synopsis")
-    per_ticker_span = {
-        tk: (full_prices[tk].dropna().index.min().date(), full_prices[tk].dropna().index.max().date())
-        for tk in full_prices.columns
-    }
     n_by_universe = {}
     for uname, umap in ALL_UNIVERSES.items():
         n_by_universe[uname] = sum(1 for a in assets if a in umap)
@@ -416,9 +415,8 @@ if run_btn:
 - **Most diversifying pair:** {NAME_LOOKUP.get(min_pair[0], min_pair[0])} & {NAME_LOOKUP.get(min_pair[1], min_pair[1])} ({corr_no_diag.loc[min_pair]:.2f})
         """)
     st.caption(
-        "This synopsis summarizes what was actually fetched and computed for this run \u2014 useful for sanity-checking "
-        "the dataset before trusting the optimization results below. The full history stays cached for 24h regardless "
-        "of which window is analyzed here."
+        "This synopsis summarizes what was actually fetched and computed for this run. The full history "
+        "stays cached for 24h regardless of which window is analyzed here."
     )
 
     st.subheader(f"1. Historical Statistics ({n} assets)")
@@ -537,10 +535,8 @@ else:
         "- **Top 50 India ETFs** (NIFTYBEES.NS, GOLDBEES.NS, BANKBEES.NS...)\n\n"
         "You can mix and match across universes, or add custom tickers, up to a **100-asset cap** per optimization run.\n\n"
         "\U0001F4C5 **Full-history data policy:** every ticker's entire available price history (from listing date to "
-        "today) is fetched and cached for 24 hours. As each new trading day and year passes, the next cache refresh "
-        "automatically includes it \u2014 no manual update needed \u2014 while every year already fetched remains part "
-        "of the same permanent series. Use the 'Years of full history to use' slider to optionally focus the "
-        "optimization on a recent window without ever discarding the full cached dataset.\n\n"
-        "After running, a **Data Synopsis** section summarizes exactly what was fetched: date ranges, best/worst "
-        "performers, and correlation extremes, before you review the full optimization results."
+        "today) is fetched and cached for 24 hours, automatically extending as new years pass. Use the "
+        "'Years of full history to use' slider to optionally focus on a recent window without discarding the full "
+        "cached dataset.\n\n"
+        "After running, a **Data Synopsis** section summarizes what was fetched before you review the optimization results."
     )
