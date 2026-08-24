@@ -16,8 +16,16 @@ Deploy free & public:
     1. Push this file + requirements.txt to a public GitHub repo.
     2. Go to https://share.streamlit.io -> "New app" -> point to the repo.
     3. Streamlit Community Cloud builds and hosts it at a public URL for free.
+
+Note on yfinance reliability:
+    yfinance scrapes Yahoo Finance (no official API), so it is occasionally
+    rate-limited (HTTP 429 "Too Many Requests"), especially for large batch
+    requests or on shared cloud IPs like Streamlit Community Cloud. This file
+    mitigates that with: batched chunked downloads, retry-with-backoff, a
+    per-ticker fallback, and 24h caching so repeated runs don't re-hit the API.
 """
 
+import time
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -101,72 +109,92 @@ max_weight = st.sidebar.slider("Max weight per asset (concentration cap)", 0.05,
 
 run_btn = st.sidebar.button("Run Optimization", type="primary")
 
-# ---------------- Core functions ----------------
-def _download_prices(tickers, start, end):
-    """Download per-ticker to avoid yfinance multi-ticker column/format quirks,
-    then align into a single wide DataFrame of Close prices."""
-    frames = {}
-    failed = []
-    for tk in tickers:
+# ---------------- Data fetching (robust to Yahoo rate limits) ----------------
+CHUNK_SIZE = 15          # keep batch requests small to reduce 429s
+MAX_RETRIES = 3
+BASE_BACKOFF = 2.0        # seconds, doubles each retry
+
+def _extract_close(df, tk):
+    if df is None or df.empty:
+        return None
+    try:
+        if isinstance(df.columns, pd.MultiIndex):
+            if (tk, "Close") in df.columns:
+                return df[(tk, "Close")]
+            lvl0 = df.columns.get_level_values(0)
+            if tk in lvl0:
+                sub = df[tk]
+                if "Close" in sub.columns:
+                    return sub["Close"]
+        else:
+            if "Close" in df.columns:
+                return df["Close"]
+    except Exception:
+        return None
+    return None
+
+def _download_chunk(chunk, start, end):
+    last_err = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            data = yf.download(chunk, start=start, end=end, auto_adjust=True,
+                                progress=False, group_by="ticker", threads=True)
+            if data is not None and not data.empty:
+                return data
+        except Exception as e:
+            last_err = e
+        time.sleep(BASE_BACKOFF * (2 ** attempt))
+    return None
+
+def _download_single(tk, start, end):
+    for attempt in range(MAX_RETRIES):
         try:
             hist = yf.Ticker(tk).history(start=start, end=end, auto_adjust=True)
-            if hist is None or hist.empty or "Close" not in hist.columns:
-                failed.append(tk)
-                continue
-            s = hist["Close"].copy()
-            s.index = pd.to_datetime(s.index).tz_localize(None)
-            frames[tk] = s
+            if hist is not None and not hist.empty and "Close" in hist.columns:
+                s = hist["Close"].copy()
+                s.index = pd.to_datetime(s.index).tz_localize(None)
+                return s
         except Exception:
-            failed.append(tk)
-    if not frames:
-        return pd.DataFrame(), tickers
-    df = pd.DataFrame(frames)
-    return df, failed
+            pass
+        time.sleep(BASE_BACKOFF * (2 ** attempt))
+    return None
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_prices(tickers, years):
     end = pd.Timestamp.today()
     start = end - pd.DateOffset(years=years)
 
-    # Primary attempt: batch download (fast path)
-    try:
-        batch = yf.download(tickers, start=start, end=end, auto_adjust=True,
-                             progress=False, group_by="ticker", threads=True)
-    except Exception:
-        batch = None
+    series_map = {}
+    remaining = list(tickers)
 
-    prices = pd.DataFrame()
-    if batch is not None and not batch.empty:
-        if isinstance(batch.columns, pd.MultiIndex):
-            close_cols = {}
-            for tk in tickers:
-                try:
-                    if (tk, "Close") in batch.columns:
-                        close_cols[tk] = batch[(tk, "Close")]
-                    elif tk in batch.columns.get_level_values(0):
-                        sub = batch[tk]
-                        if "Close" in sub.columns:
-                            close_cols[tk] = sub["Close"]
-                except Exception:
-                    continue
-            if close_cols:
-                prices = pd.DataFrame(close_cols)
-        else:
-            # single-ticker case: flat columns
-            if "Close" in batch.columns:
-                prices = batch[["Close"]].rename(columns={"Close": tickers[0]})
+    for i in range(0, len(remaining), CHUNK_SIZE):
+        chunk = remaining[i:i + CHUNK_SIZE]
+        data = _download_chunk(chunk, start, end)
+        if data is None:
+            continue
+        for tk in chunk:
+            s = _extract_close(data, tk) if len(chunk) > 1 else (
+                data["Close"] if "Close" in data.columns else None
+            )
+            if s is not None and not s.dropna().empty:
+                s = s.copy()
+                s.index = pd.to_datetime(s.index).tz_localize(None) if s.index.tz is not None else s.index
+                series_map[tk] = s
+        time.sleep(1.0)
 
+    missing = [t for t in tickers if t not in series_map]
+    for tk in missing:
+        s = _download_single(tk, start, end)
+        if s is not None and not s.dropna().empty:
+            series_map[tk] = s
+        time.sleep(0.5)
+
+    if not series_map:
+        return pd.DataFrame()
+
+    prices = pd.DataFrame(series_map)
     prices = prices.dropna(axis=1, how="all")
-    missing = [t for t in tickers if t not in prices.columns]
-
-    # Fallback: per-ticker retry for anything missing from the batch call
-    if missing:
-        fallback_df, still_failed = _download_prices(missing, start, end)
-        if not fallback_df.empty:
-            prices = pd.concat([prices, fallback_df], axis=1)
-
-    prices = prices.dropna(axis=1, how="all").dropna(how="all")
-    prices = prices.ffill().dropna()
+    prices = prices.ffill().dropna(how="any")
     return prices
 
 def portfolio_perf(weights, mean_rets, cov):
@@ -206,17 +234,23 @@ if run_btn:
         st.error("Select at least 2 tickers.")
         st.stop()
 
-    with st.spinner(f"Downloading price history for {len(tickers)} tickers..."):
+    with st.spinner(f"Downloading price history for {len(tickers)} tickers (chunked, with retries)..."):
         prices = fetch_prices(tuple(tickers), years_back)
 
-    dropped = set(tickers) - set(prices.columns)
+    dropped = set(tickers) - set(prices.columns if not prices.empty else [])
     if dropped:
-        st.warning(f"Could not fetch data for: {', '.join(sorted(dropped))} \u2014 excluded from optimization. "
-                    "This usually means the ticker was delisted/renamed, or Yahoo Finance rate-limited the request \u2014 try again in a minute.")
+        st.warning(
+            f"Could not fetch data for: {', '.join(sorted(dropped))} \u2014 excluded from optimization. "
+            "Yahoo Finance sometimes rate-limits large batch requests (HTTP 429), especially on shared cloud "
+            "IPs. Click **Run Optimization** again in 30\u201360 seconds, or reduce the number of selected tickers."
+        )
 
     if prices.empty or prices.shape[1] < 2:
-        st.error("Could not fetch enough data for these tickers. Yahoo Finance may be rate-limiting "
-                 "this session \u2014 wait ~30-60 seconds and click Run Optimization again, or reduce the number of tickers.")
+        st.error(
+            "Could not fetch enough price data. This is almost always Yahoo Finance temporarily rate-limiting "
+            "requests, not a bug in the app. Wait about a minute and click **Run Optimization** again, try a "
+            "smaller ticker selection, or reduce Monte Carlo simulations to retry faster."
+        )
         st.stop()
 
     assets = list(prices.columns)
@@ -253,7 +287,6 @@ if run_btn:
 
     bounds = tuple((None, max_weight) if allow_short else (0.0, max_weight) for _ in range(n))
 
-    # ---- Monte Carlo simulation ----
     with st.spinner(f"Running {n_portfolios:,} Monte Carlo simulations across {n} assets..."):
         rng = np.random.default_rng(42)
         if allow_short:
@@ -266,7 +299,6 @@ if run_btn:
         vols_mc = np.sqrt(np.einsum("ij,jk,ik->i", weights_mc, cov, weights_mc))
         sharpe_mc = (rets_mc - risk_free_rate) / vols_mc
 
-    # ---- SLSQP: Max Sharpe & Min Vol ----
     with st.spinner("Solving SLSQP optimizations..."):
         w_max_sharpe = optimize_max_sharpe(mean_rets, cov, risk_free_rate, bounds)
         ret_ms, vol_ms = portfolio_perf(w_max_sharpe, mean_rets, cov)
@@ -300,7 +332,6 @@ if run_btn:
         st.metric("Expected Return", f"{ret_mv:.2%}")
         st.metric("Volatility", f"{vol_mv:.2%}")
 
-    # ---- Plot ----
     st.subheader("4. Efficient Frontier")
     fig = go.Figure()
     fig.add_trace(go.Scatter(
