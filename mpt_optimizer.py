@@ -8,6 +8,10 @@ Efficient Frontier.
 Universe: Top 100 US stocks, Top 100 India (NSE) stocks, Top 50 US mutual
 funds, and Top 50 India-listed ETFs.
 
+Note: Marsh McLennan changed its NYSE ticker from MMC to MRSH effective
+January 14, 2026 (company rebrand to "Marsh"). This universe uses the
+current symbol MRSH.
+
 A hard cap of 100 assets per optimization run is enforced regardless of
 how many are selected, to keep Monte Carlo + SLSQP runtime and Yahoo
 Finance API load manageable.
@@ -71,7 +75,7 @@ US_TOP100 = {
     "LOW": "Lowe's", "SPGI": "S&P Global", "BKNG": "Booking Holdings", "ADBE": "Adobe",
     "NOW": "ServiceNow", "ISRG": "Intuitive Surgical", "SYK": "Stryker", "TJX": "TJX Companies",
     "VRTX": "Vertex Pharmaceuticals", "PGR": "Progressive Corp", "BSX": "Boston Scientific", "ETN": "Eaton Corp",
-    "MMC": "Marsh & McLennan", "PYPL": "PayPal Holdings", "ADP": "Automatic Data Processing", "CB": "Chubb",
+    "MRSH": "Marsh McLennan", "PYPL": "PayPal Holdings", "ADP": "Automatic Data Processing", "CB": "Chubb",
     "MDT": "Medtronic", "CI": "Cigna Group", "SO": "Southern Co", "REGN": "Regeneron Pharmaceuticals",
     "DUK": "Duke Energy", "ELV": "Elevance Health", "ICE": "Intercontinental Exchange", "APD": "Air Products",
 }
