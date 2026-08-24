@@ -9,31 +9,28 @@ Universe: Top 100 US stocks, Top 100 India (NSE) stocks, Top 50 US mutual
 funds, and Top 50 India-listed ETFs.
 
 Ticker rename notes (Yahoo Finance only serves data under CURRENT symbols):
-- Marsh McLennan: MMC -> MRSH, effective Jan 14, 2026 (company rebrand to "Marsh")
+- Marsh McLennan: MMC -> MRSH, effective Jan 14, 2026
 - United Spirits: MCDOWELL-N.NS -> UNITDSPR.NS
-- Tata Motors (passenger vehicle business): TATAMOTORS.NS -> TMPV.NS, effective
-  Oct 24, 2025 (demerger into passenger vehicle and commercial vehicle entities)
-- Zomato: ZOMATO.NS -> ETERNAL.NS, effective Apr 9, 2025 (corporate rebrand to Eternal Ltd)
+- Tata Motors (passenger vehicle business): TATAMOTORS.NS -> TMPV.NS
+- Zomato: ZOMATO.NS -> ETERNAL.NS
+
+Search UX:
+    All 300 tickers across every universe are combined into ONE searchable
+    list. Streamlit's multiselect has built-in fuzzy-search-as-you-type, so
+    typing a partial ticker OR partial company name (e.g. "reliance",
+    "appl", "nifty bank") filters the dropdown live. A separate free-text
+    box remains for any ticker not in the built-in universe.
 
 A hard cap of 100 assets per optimization run is enforced regardless of
-how many are selected, to keep Monte Carlo + SLSQP runtime and Yahoo
-Finance API load manageable.
+how many are selected.
 
 Data policy \u2014 full history, always growing, never shrinking:
     The app fetches each ticker's FULL available price history (from its
-    IPO/listing date to today, via yfinance period="max") rather than a
-    fixed lookback window. Results are cached for 24h, so every day this
-    cache refreshes it automatically picks up the newest trading data,
-    while every prior year already fetched remains part of the same
-    continuous series.
+    IPO/listing date to today, via yfinance period="max"), cached 24h.
 
 Custom analysis window (years + as-of date):
-    Users can pick BOTH how many years of history to analyze AND the
-    "as of" end date for that window (defaults to today). This lets you
-    run, for example, "5 years of data ending 2023-12-31" and see exactly
-    what the statistics and efficient frontier looked like using only
-    data available up to that historical point. This only slices the
-    already-cached full history; it never re-fetches or discards data.
+    Pick both a number of years AND an "as of" end date to run point-in-time
+    historical analysis, slicing the cached full history without discarding it.
 
 Run locally:
     pip install streamlit yfinance numpy pandas scipy plotly
@@ -155,9 +152,6 @@ INDIA_ETFS_50 = {
     "CONSUMBEES.NS": "Nippon India ETF Nifty India Consumption", "PHARMABEES.NS": "Nippon India ETF Nifty Pharma",
 }
 
-# Runtime safety net: if any universe list is ever edited and its count
-# drifts, fail gracefully with a clear in-app message naming the exact
-# dict, rather than crashing the whole page with a raw traceback.
 _universe_sizes = {"US_TOP100": (US_TOP100, 100), "INDIA_TOP100": (INDIA_TOP100, 100),
                     "US_FUNDS_50": (US_FUNDS_50, 50), "INDIA_ETFS_50": (INDIA_ETFS_50, 50)}
 for _name, (_d, _expected) in _universe_sizes.items():
@@ -173,39 +167,59 @@ ALL_UNIVERSES = {
     "Top 50 India ETFs": INDIA_ETFS_50,
 }
 NAME_LOOKUP = {}
-for _u in ALL_UNIVERSES.values():
+TICKER_UNIVERSE_LABEL = {}
+for _uname, _u in ALL_UNIVERSES.items():
     NAME_LOOKUP.update(_u)
+    for _tk in _u:
+        TICKER_UNIVERSE_LABEL[_tk] = _uname
+
+# Combined searchable directory: "TICKER \u2014 Company Name (Universe)"
+# Streamlit's multiselect/selectbox already do live fuzzy-matching against
+# these label strings as the user types, so no extra search component is
+# needed \u2014 typing "reliance", "appl", or "RELIANCE.NS" all work.
+SEARCH_DIRECTORY = {
+    f"{tk} \u2014 {name} ({TICKER_UNIVERSE_LABEL[tk]})": tk
+    for tk, name in sorted(NAME_LOOKUP.items(), key=lambda kv: kv[1])
+}
 
 # ---------------- Sidebar inputs ----------------
 st.sidebar.header("Configuration")
 
-bucket_choices = st.sidebar.multiselect(
-    "Select one or more universes to pull tickers from",
-    list(ALL_UNIVERSES.keys()),
-    default=["Top 100 US Stocks"]
+st.sidebar.subheader("\U0001F50D Search & select assets")
+st.sidebar.caption(
+    "Start typing a **company name** (e.g. \"reliance\", \"apple\") or a **ticker** "
+    "(e.g. \"AAPL\", \"TCS.NS\") \u2014 matching results filter live as you type, across "
+    "all 300 tickers in every universe."
 )
+search_selected_labels = st.sidebar.multiselect(
+    "Search assets by name or ticker",
+    options=list(SEARCH_DIRECTORY.keys()),
+    default=[],
+    placeholder="Type to search, e.g. 'reliance', 'AAPL', 'nifty bank'..."
+)
+searched_tickers = [SEARCH_DIRECTORY[lbl] for lbl in search_selected_labels]
 
-candidate_map = {}
+st.sidebar.markdown("**\u2014 or \u2014**")
+
+bucket_choices = st.sidebar.multiselect(
+    "Pull an entire universe (adds all its tickers)",
+    list(ALL_UNIVERSES.keys()),
+    default=[]
+)
+bucket_tickers = []
 for b in bucket_choices:
-    candidate_map.update(ALL_UNIVERSES[b])
+    bucket_tickers.extend(ALL_UNIVERSES[b].keys())
 
-if candidate_map:
-    options = [f"{tk} \u2014 {name}" for tk, name in candidate_map.items()]
-    selected_labels = st.sidebar.multiselect(
-        f"Select assets ({len(options)} available across chosen universes)",
-        options, default=options
-    )
-    tickers = [lbl.split(" \u2014 ")[0] for lbl in selected_labels]
-else:
-    tickers = []
-
-use_custom = st.sidebar.checkbox("Add custom tickers manually")
+use_custom = st.sidebar.checkbox("Add a custom ticker not in the list above")
+custom_tickers = []
 if use_custom:
-    custom_input = st.sidebar.text_area(
-        "Extra tickers, comma-separated (.NS suffix for NSE stocks, e.g. INFY.NS)", ""
+    custom_input = st.sidebar.text_input(
+        "Custom ticker (.NS suffix for NSE stocks, e.g. INFY.NS)", ""
     )
-    extra = [t.strip().upper() for t in custom_input.split(",") if t.strip()]
-    tickers = list(dict.fromkeys(tickers + extra))
+    if custom_input.strip():
+        custom_tickers = [custom_input.strip().upper()]
+
+tickers = list(dict.fromkeys(searched_tickers + bucket_tickers + custom_tickers))
 
 n_selected = len(tickers)
 if n_selected > MAX_ASSETS:
@@ -216,12 +230,15 @@ if n_selected > MAX_ASSETS:
     tickers = tickers[:MAX_ASSETS]
 
 st.sidebar.caption(f"**{len(tickers)} / {MAX_ASSETS} assets selected for this run**")
+if tickers:
+    with st.sidebar.expander("View selected tickers"):
+        for tk in tickers:
+            st.write(f"{tk} \u2014 {NAME_LOOKUP.get(tk, 'Custom ticker')}")
 
 st.sidebar.subheader("Historical window")
 st.sidebar.caption(
     "The app always fetches each ticker's **full available history** (from listing date to today) "
-    "and caches it for 24h. The controls below only choose which slice of that cached data is used "
-    "for the statistics/optimization \u2014 they never discard or re-fetch a shorter series."
+    "and caches it for 24h. The controls below only choose which slice of that cached data is used."
 )
 
 use_custom_asof = st.sidebar.checkbox(
@@ -366,7 +383,7 @@ def optimize_min_vol(mean_rets, cov, bounds, target_return=None):
 # ---------------- Main pipeline ----------------
 if run_btn:
     if len(tickers) < 2:
-        st.error("Select at least 2 tickers.")
+        st.error("Select at least 2 tickers using the search box or a universe.")
         st.stop()
 
     with st.spinner(f"Downloading FULL available price history for {len(tickers)} tickers (chunked, with retries)..."):
@@ -572,19 +589,15 @@ if run_btn:
         "returns/volatility are computed independently per asset's native price series."
     )
 else:
-    st.info("Choose one or more universes and assets in the sidebar (max 100 per run), then click **Run Optimization**.")
+    st.info("Search for assets by name/ticker or pull a whole universe in the sidebar (max 100 per run), then click **Run Optimization**.")
     st.markdown(
-        "**Available universes:**\n"
-        "- **Top 100 US Stocks** by market cap (NVDA, AAPL, MSFT, GOOGL...)\n"
-        "- **Top 100 India (NSE) Stocks** by market cap (RELIANCE.NS, HDFCBANK.NS, TCS.NS...)\n"
-        "- **Top 50 US Mutual Funds** by AUM (VTSAX, VFIAX, FXAIX...)\n"
-        "- **Top 50 India ETFs** (NIFTYBEES.NS, GOLDBEES.NS, BANKBEES.NS...)\n\n"
-        "You can mix and match across universes, or add custom tickers, up to a **100-asset cap** per optimization run.\n\n"
-        "\U0001F4C5 **Full-history data policy:** every ticker's entire available price history (from listing date to "
-        "today) is fetched and cached for 24 hours, automatically extending as new years pass.\n\n"
-        "\U0001F553 **Custom analysis window:** enable 'Use a custom as of end date' in the sidebar to run the "
-        "optimization as if today were an earlier date (e.g., analyze 5 years of data ending 2023-12-31). Combine "
-        "with 'Years of history to use' to define exactly which slice of the cached full history to analyze \u2014 "
-        "nothing is ever discarded, this just changes which window is read.\n\n"
-        "After running, a **Data Synopsis** section summarizes what was fetched and which window was analyzed."
+        "**\U0001F50D How search works:** type into the sidebar search box \u2014 it matches against both "
+        "**company names** and **ticker symbols** across all 300 available assets (Top 100 US Stocks, Top 100 "
+        "India Stocks, Top 50 US Mutual Funds, Top 50 India ETFs). For example, typing \"apple\" finds AAPL, "
+        "typing \"nifty bank\" finds the Bank Nifty ETF, and typing \"tcs\" finds Tata Consultancy Services.\n\n"
+        "You can also pull an entire universe at once, or add any custom ticker not in the built-in list.\n\n"
+        "\U0001F4C5 **Full-history data policy:** every ticker's entire available price history is fetched and "
+        "cached for 24 hours, automatically extending as new years pass.\n\n"
+        "\U0001F553 **Custom analysis window:** enable 'Use a custom as of end date' to run the optimization as "
+        "if today were an earlier date, combined with 'Years of history to use' for point-in-time analysis."
     )
