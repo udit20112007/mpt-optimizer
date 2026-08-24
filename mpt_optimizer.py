@@ -14,6 +14,22 @@ Ticker rename notes (Yahoo Finance only serves data under CURRENT symbols):
 - Tata Motors (passenger vehicle business): TATAMOTORS.NS -> TMPV.NS
 - Zomato: ZOMATO.NS -> ETERNAL.NS
 - LTIMindtree: LTIM.NS -> LTM.NS, effective Feb 11, 2026
+- ICICI Prudential Nifty ETF: ICICINIFTY.NS -> NIFTYIETF.NS, effective Dec 20, 2023
+  (NSE circular CML59760 -- ICICI Prudential renamed its entire ETF suite that day)
+- Kotak Nifty ETF: KOTAKNIFTY.NS -> NIFTY1.NS (confirmed via Kotak AMC factsheets)
+- UTI Nifty 50 ETF: UTINIFTETF.NS -> NIFTYBETA.NS, effective Dec 24, 2025
+  (UTI AMC added a "BETA" suffix across its entire ETF suite on NSE/BSE that day)
+- UTI BSE Sensex ETF: UTISENSETF.NS -> SENSEXBETA.NS (same Dec 2025 UTI rename wave)
+- CPSE ETF: CPSE.NS -> CPSEETF.NS (CPSE.NS was never the correct Yahoo/NSE symbol)
+- ICICI Prudential Private Banks ETF: PVTBANKIETF.NS -> PVTBANIETF.NS (no "K"; the
+  correct NSE symbol per ICICI Prudential/indmoney listings omits the extra letter)
+- SBINIFTY.NS was removed outright: SBI's actual Nifty 50 ETF trades under
+  SETFNIF50.NS, which was already separately present in this list, so SBINIFTY.NS
+  was a duplicate/incorrect entry rather than a rename. Replaced with
+  MID150BEES.NS (Nippon India ETF Nifty Midcap 150) to keep the count at 50.
+- SBISENSEX.NS and GOLDSHARE.NS were independently confirmed still valid and
+  actively traded on NSE as of Aug 2026; their earlier "could not fetch" failures
+  were Yahoo Finance rate-limiting (HTTP 429) on that specific run, not bad tickers.
 
 Fund universe note: SPAXX and FZCXX (Fidelity money market funds) were
 removed. Money market funds have a fixed $1.00 NAV by SEC design (Rule
@@ -166,18 +182,18 @@ US_FUNDS_50 = {
 
 INDIA_ETFS_50 = {
     "NIFTYBEES.NS": "Nippon India ETF Nifty BeES", "JUNIORBEES.NS": "Nippon India ETF Junior BeES", "BANKBEES.NS": "Nippon India ETF Bank BeES", "GOLDBEES.NS": "Nippon India ETF Gold BeES",
-    "ICICINIFTY.NS": "ICICI Prudential Nifty ETF", "HDFCNIFTY.NS": "HDFC Nifty 50 ETF", "SBINIFTY.NS": "SBI Nifty 50 ETF", "UTINIFTETF.NS": "UTI Nifty 50 ETF",
-    "KOTAKNIFTY.NS": "Kotak Nifty ETF", "AXISNIFTY.NS": "Axis Nifty ETF", "ICICIB22.NS": "ICICI Prudential Bharat 22 ETF", "ITBEES.NS": "Nippon India ETF Nifty IT",
-    "PSUBNKBEES.NS": "Nippon India ETF PSU Bank BeES", "MON100.NS": "Motilal Oswal Nasdaq 100 ETF", "MAFANG.NS": "Mirae Asset NYSE FANG+ ETF", "CPSE.NS": "CPSE ETF",
-    "LIQUIDBEES.NS": "Nippon India ETF Liquid BeES", "SILVERBEES.NS": "Nippon India ETF Silver BeES", "HNGSNGBEES.NS": "Nippon India ETF Hang Seng BeES", "INFRABEES.NS": "Nippon India ETF Infra BeES",
-    "PVTBANKIETF.NS": "ICICI Prudential Private Banks ETF", "MIDCAPETF.NS": "Motilal Oswal Midcap 150 ETF", "NV20.NS": "Nippon India ETF Nifty 50 Value 20", "LOWVOLIETF.NS": "ICICI Prudential Nifty Low Vol 30 ETF",
-    "ALPHA.NS": "Nippon India ETF Nifty Alpha 50", "QUAL30IETF.NS": "ICICI Prudential Nifty200 Quality 30 ETF", "MOM30IETF.NS": "ICICI Prudential Nifty200 Momentum 30 ETF", "HDFCSML250.NS": "HDFC Nifty Smallcap 250 ETF",
-    "MOM100.NS": "Motilal Oswal Nifty Midcap 100 ETF", "NEXT50IETF.NS": "ICICI Prudential Nifty Next 50 ETF", "SETFNIF50.NS": "SBI ETF Nifty 50", "SETFNIFBK.NS": "SBI ETF Nifty Bank",
-    "HDFCPVTBAN.NS": "HDFC Nifty Private Bank ETF", "GOLDSHARE.NS": "UTI Gold ETF", "AXISGOLD.NS": "Axis Gold ETF", "SBIETFQLTY.NS": "SBI Nifty Quality ETF",
-    "ABSLNN50ET.NS": "Aditya Birla SL Nifty 50 ETF", "EQUAL50.NS": "Nippon India Nifty 50 Equal Weight ETF", "MOSMALL250.NS": "Motilal Oswal Nifty Smallcap 250 ETF", "MOHEALTH.NS": "Motilal Oswal Healthcare ETF",
-    "MOMOMENTUM.NS": "Motilal Oswal Nifty200 Momentum 30 ETF", "LICNETFSEN.NS": "LIC MF Sensex ETF", "HDFCSENSEX.NS": "HDFC Sensex ETF", "SBISENSEX.NS": "SBI ETF Sensex",
-    "UTISENSETF.NS": "UTI Sensex ETF", "TATAGOLD.NS": "Tata Gold ETF", "QGOLDHALF.NS": "Quantum Gold Fund", "AUTOBEES.NS": "Nippon India ETF Nifty Auto",
-    "CONSUMBEES.NS": "Nippon India ETF Nifty India Consumption", "PHARMABEES.NS": "Nippon India ETF Nifty Pharma",
+    "HDFCNIFTY.NS": "HDFC Nifty 50 ETF", "AXISNIFTY.NS": "Axis Nifty ETF", "ICICIB22.NS": "ICICI Prudential Bharat 22 ETF", "ITBEES.NS": "Nippon India ETF Nifty IT",
+    "PSUBNKBEES.NS": "Nippon India ETF PSU Bank BeES", "MON100.NS": "Motilal Oswal Nasdaq 100 ETF", "MAFANG.NS": "Mirae Asset NYSE FANG+ ETF", "LIQUIDBEES.NS": "Nippon India ETF Liquid BeES",
+    "SILVERBEES.NS": "Nippon India ETF Silver BeES", "HNGSNGBEES.NS": "Nippon India ETF Hang Seng BeES", "INFRABEES.NS": "Nippon India ETF Infra BeES", "MIDCAPETF.NS": "Motilal Oswal Midcap 150 ETF",
+    "NV20.NS": "Nippon India ETF Nifty 50 Value 20", "LOWVOLIETF.NS": "ICICI Prudential Nifty Low Vol 30 ETF", "ALPHA.NS": "Nippon India ETF Nifty Alpha 50", "QUAL30IETF.NS": "ICICI Prudential Nifty200 Quality 30 ETF",
+    "MOM30IETF.NS": "ICICI Prudential Nifty200 Momentum 30 ETF", "HDFCSML250.NS": "HDFC Nifty Smallcap 250 ETF", "MOM100.NS": "Motilal Oswal Nifty Midcap 100 ETF", "NEXT50IETF.NS": "ICICI Prudential Nifty Next 50 ETF",
+    "SETFNIF50.NS": "SBI ETF Nifty 50", "SETFNIFBK.NS": "SBI ETF Nifty Bank", "HDFCPVTBAN.NS": "HDFC Nifty Private Bank ETF", "GOLDSHARE.NS": "UTI Gold ETF",
+    "AXISGOLD.NS": "Axis Gold ETF", "SBIETFQLTY.NS": "SBI Nifty Quality ETF", "ABSLNN50ET.NS": "Aditya Birla SL Nifty 50 ETF", "EQUAL50.NS": "Nippon India Nifty 50 Equal Weight ETF",
+    "MOSMALL250.NS": "Motilal Oswal Nifty Smallcap 250 ETF", "MOHEALTH.NS": "Motilal Oswal Healthcare ETF", "MOMOMENTUM.NS": "Motilal Oswal Nifty200 Momentum 30 ETF", "LICNETFSEN.NS": "LIC MF Sensex ETF",
+    "HDFCSENSEX.NS": "HDFC Sensex ETF", "SBISENSEX.NS": "SBI ETF Sensex", "TATAGOLD.NS": "Tata Gold ETF", "QGOLDHALF.NS": "Quantum Gold Fund",
+    "AUTOBEES.NS": "Nippon India ETF Nifty Auto", "CONSUMBEES.NS": "Nippon India ETF Nifty India Consumption", "PHARMABEES.NS": "Nippon India ETF Nifty Pharma", "NIFTYIETF.NS": "ICICI Prudential Nifty ETF",
+    "NIFTY1.NS": "Kotak Nifty ETF", "NIFTYBETA.NS": "UTI Nifty 50 ETF", "CPSEETF.NS": "CPSE ETF", "PVTBANIETF.NS": "ICICI Prudential Private Banks ETF",
+    "SENSEXBETA.NS": "UTI Sensex ETF", "MID150BEES.NS": "Nippon India ETF Nifty Midcap 150",
 }
 
 _universe_sizes = {"US_TOP100": (US_TOP100, 100), "INDIA_TOP100": (INDIA_TOP100, 100),
