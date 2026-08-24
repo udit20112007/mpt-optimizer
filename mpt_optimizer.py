@@ -28,13 +28,17 @@ Custom analysis window (years + as-of date):
     Pick both a number of years AND an "as of" end date for point-in-time
     historical analysis, slicing the cached full history without discarding it.
 
-Backtesting (NEW):
+Backtesting:
     Splits the analysis window into an in-sample training period and an
-    out-of-sample test period. Optimizes weights using ONLY the training
-    period, then freezes those weights and simulates their real
-    performance over the test period \u2014 the standard way to check whether
-    an optimization is genuinely predictive or just curve-fit to history.
-    Compares against an equal-weight benchmark over the same test period.
+    out-of-sample test period, freezing weights trained only on the past
+    and comparing against an equal-weight benchmark.
+
+Plain-language chart summaries (NEW):
+    After the efficient frontier chart and (if enabled) the backtest chart,
+    the app auto-generates a short, jargon-free written takeaway describing
+    what the chart shows in everyday terms \u2014 e.g. how much risk reduction
+    diversification bought, and whether the optimized strategy actually beat
+    a simple naive strategy out-of-sample.
 
 Run locally:
     pip install streamlit yfinance numpy pandas scipy plotly
@@ -264,8 +268,7 @@ max_weight = st.sidebar.slider("Max weight per asset (concentration cap)", 0.05,
 
 st.sidebar.subheader("\U0001F9EA Backtesting (out-of-sample)")
 st.sidebar.caption(
-    "Splits your analysis window into a training period (used to compute optimal weights) and a "
-    "held-out test period (used to see how those FROZEN weights actually perform). This checks "
+    "Splits your analysis window into a training period and a held-out test period, to check "
     "whether the optimization is genuinely predictive or just fit to past data."
 )
 run_backtest = st.sidebar.checkbox("Run out-of-sample backtest", value=False)
@@ -405,6 +408,78 @@ def compute_sortino(daily_returns, rf_daily):
     downside_std = downside.std() * np.sqrt(252) if len(downside) > 0 else np.nan
     ann_excess = excess.mean() * 252
     return ann_excess / downside_std if downside_std and downside_std > 0 else np.nan
+
+def explain_frontier_plain_language(mean_rets, cov, w_max_sharpe, ret_ms, vol_ms, sharpe_ms,
+                                      w_min_vol, ret_mv, vol_mv, assets, name_lookup, n, rf):
+    """Generate a jargon-free written takeaway for the efficient frontier chart."""
+    single_vols = np.sqrt(np.diag(cov))
+    avg_single_vol = single_vols.mean()
+    risk_reduction = (avg_single_vol - vol_mv) / avg_single_vol if avg_single_vol > 0 else 0
+
+    top3_ms_idx = np.argsort(w_max_sharpe)[::-1][:3]
+    top3_names = [name_lookup.get(assets[i], assets[i]) for i in top3_ms_idx if w_max_sharpe[i] > 0.01]
+
+    return_gain = ret_ms - ret_mv
+    vol_gain = vol_ms - vol_mv
+
+    lines = []
+    lines.append(
+        f"**In plain terms:** out of the {n} investments you picked, spreading your money across all of them "
+        f"instead of holding just one cuts your risk by roughly **{risk_reduction:.0%}** on average \u2014 "
+        "this is the core benefit of diversification: it smooths out the bumps without necessarily costing you return."
+    )
+    if top3_names:
+        lines.append(
+            f"The single **best risk-adjusted mix** (gold star) leans most heavily on "
+            f"**{', '.join(top3_names)}**. It's expected to grow about **{ret_ms:.1%} per year**, "
+            f"with typical up-and-down swings of about **\u00b1{vol_ms:.1%}** \u2014 think of that as the "
+            "size of a normal good or bad year, not a hard ceiling or floor."
+        )
+    lines.append(
+        f"The **safest mix** (blue diamond) trades some of that return away \u2014 about "
+        f"**{return_gain:.1%} per year less** \u2014 in exchange for noticeably calmer swings "
+        f"(**{abs(vol_gain):.1%}** less bounce). Neither mix is \"right\"; it depends on whether "
+        "you'd rather chase higher growth or sleep easier during downturns."
+    )
+    lines.append(
+        f"The red curve is the boundary of what's mathematically achievable with this exact set of assets \u2014 "
+        "every dot below or to the right of it represents a worse deal (either less return for the same risk, "
+        "or more risk for the same return). Nothing on this chart guarantees future performance; it's built "
+        "entirely from how these assets moved in the past."
+    )
+    return "\n\n".join(lines)
+
+def explain_backtest_plain_language(bt_results, best_strategy, beat_benchmark, test_days):
+    """Generate a jargon-free written takeaway for the backtest chart."""
+    ms_row = bt_results.iloc[0]
+    eq_row = bt_results.iloc[2]
+    diff = ms_row["Test-Period Return"] - eq_row["Test-Period Return"]
+
+    lines = []
+    if beat_benchmark:
+        lines.append(
+            f"**In plain terms:** when the \"optimal\" mix was actually put to the test on "
+            f"**{test_days} days of unseen data**, it earned about **{diff:+.1%} more** than simply "
+            "splitting your money equally across every asset. That's a genuinely encouraging sign \u2014 "
+            "it suggests the optimization found a real, lasting pattern in how these assets behave, not "
+            "just noise from the specific historical window it was trained on."
+        )
+    else:
+        lines.append(
+            f"**In plain terms:** when the \"optimal\" mix was actually put to the test on "
+            f"**{test_days} days of unseen data**, it earned about **{abs(diff):.1%} LESS** than simply "
+            "splitting your money equally across every asset. This is a common and important finding in "
+            "portfolio optimization: a strategy that looks best on historical data doesn't always keep "
+            "winning once you test it on data it never saw. It's a reminder to treat optimized weights as "
+            "one input among several, not a guaranteed formula."
+        )
+    lines.append(
+        f"**{best_strategy}** ended up being the best performer in this specific test window. Keep in mind "
+        "this is just one test period \u2014 running the backtest with a different test period size or a "
+        "different as-of date can change which strategy comes out ahead, which itself is useful information "
+        "about how reliable (or fragile) the optimization is for this particular set of assets."
+    )
+    return "\n\n".join(lines)
 
 # ---------------- Main pipeline ----------------
 if run_btn:
@@ -600,6 +675,12 @@ if run_btn:
         f"Universe: {n} assets, analysis window: {window_desc}. Mixed currencies (USD/INR) are not FX-adjusted."
     )
 
+    st.markdown("#### \U0001F4A1 What This Chart Means")
+    st.markdown(explain_frontier_plain_language(
+        mean_rets, cov, w_max_sharpe, ret_ms, vol_ms, sharpe_ms,
+        w_min_vol, ret_mv, vol_mv, assets, NAME_LOOKUP, n, risk_free_rate
+    ))
+
     # ---------------- 5. Out-of-sample backtest ----------------
     if run_backtest:
         st.subheader("5. \U0001F9EA Out-of-Sample Backtest")
@@ -686,10 +767,11 @@ if run_btn:
                 f"**{best_strategy}** had the highest out-of-sample return in this test period. "
                 f"The Max Sharpe portfolio {'beat' if beat_benchmark else 'did NOT beat'} the equal-weight "
                 "benchmark here \u2014 a reminder that in-sample optimization can still underperform a naive "
-                "strategy out-of-sample, especially over short or unusual test windows. Max Drawdown shows the "
-                "worst peak-to-trough decline; Sortino Ratio penalizes only downside volatility (unlike Sharpe, "
-                "which penalizes all volatility equally)."
+                "strategy out-of-sample, especially over short or unusual test windows."
             )
+
+            st.markdown("#### \U0001F4A1 What This Chart Means")
+            st.markdown(explain_backtest_plain_language(bt_results, best_strategy, beat_benchmark, len(test_prices)))
 else:
     st.info("Search for assets by name/ticker or pull a whole universe in the sidebar (max 100 per run), then click **Run Optimization**.")
     st.markdown(
@@ -700,7 +782,7 @@ else:
         "\U0001F553 **Custom analysis window:** run the optimization as if today were an earlier date via "
         "the as-of date and years-back controls.\n\n"
         "\U0001F9EA **Backtesting:** enable 'Run out-of-sample backtest' to see how the optimized weights "
-        "would have actually performed on data NOT used to compute them, compared against an equal-weight "
-        "benchmark \u2014 the standard check for whether an optimization is genuinely predictive or just "
-        "curve-fit to its training window."
+        "would have actually performed on unseen data, compared against an equal-weight benchmark.\n\n"
+        "\U0001F4A1 **Plain-language takeaways:** after each chart, the app writes a short, jargon-free "
+        "summary explaining what the results actually mean \u2014 no finance background required."
     )
