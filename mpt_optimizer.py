@@ -13,7 +13,7 @@ Ticker rename notes (Yahoo Finance only serves data under CURRENT symbols):
 - United Spirits: MCDOWELL-N.NS -> UNITDSPR.NS
 - Tata Motors (passenger vehicle business): TATAMOTORS.NS -> TMPV.NS
 - Zomato: ZOMATO.NS -> ETERNAL.NS
-- LTIMindtree: LTIM.NS -> LTM.NS, effective Feb 11, 2026 (rebrand to "LTM Limited")
+- LTIMindtree: LTIM.NS -> LTM.NS, effective Feb 11, 2026
 
 Search UX:
     All 300 tickers across every universe are combined into ONE searchable
@@ -39,14 +39,16 @@ Backtesting:
     Splits the analysis window into an in-sample training period and an
     out-of-sample test period, freezing weights trained only on the past
     and comparing against an equal-weight benchmark. Test-period % returns
-    for every strategy are shown in a clearly labeled, color-coded table.
+    for every strategy are shown in a clearly labeled table. Color-gradient
+    styling on that table degrades gracefully if matplotlib is unavailable
+    (it is an optional pandas Styler dependency) instead of crashing the app.
 
 Plain-language chart summaries:
     After the efficient frontier chart and (if enabled) the backtest chart,
     the app auto-generates a short, jargon-free written takeaway.
 
 Run locally:
-    pip install streamlit yfinance numpy pandas scipy plotly
+    pip install streamlit yfinance numpy pandas scipy plotly matplotlib
     streamlit run mpt_optimizer.py
 
 Deploy free & public:
@@ -823,13 +825,15 @@ if run_btn:
             )
 
             st.markdown("**\U0001F4B0 Return earned by each strategy during the test period:**")
-            st.dataframe(
-                bt_results.style.format({
-                    "Test-Period Return (%)": "{:+.2f}%", "Test-Period Ann. Vol (%)": "{:.2f}%",
-                    "Max Drawdown (%)": "{:.2f}%", "Sortino Ratio": "{:.3f}"
-                }).background_gradient(subset=["Test-Period Return (%)"], cmap="RdYlGn"),
-                hide_index=True
-            )
+            styled_bt = bt_results.style.format({
+                "Test-Period Return (%)": "{:+.2f}%", "Test-Period Ann. Vol (%)": "{:.2f}%",
+                "Max Drawdown (%)": "{:.2f}%", "Sortino Ratio": "{:.3f}"
+            })
+            try:
+                styled_bt = styled_bt.background_gradient(subset=["Test-Period Return (%)"], cmap="RdYlGn")
+            except (ImportError, ModuleNotFoundError):
+                pass
+            st.dataframe(styled_bt, hide_index=True)
 
             fig_bt = go.Figure()
             fig_bt.add_trace(go.Scatter(x=cum_ms.index, y=(cum_ms - 1) * 100, name="Max Sharpe (trained)",
@@ -865,7 +869,7 @@ else:
         "cached for 24 hours.\n\n"
         "\u26A0\uFE0F **Important:** your analysis window is capped by whichever selected ticker has the "
         "shortest available history. A full history-length table for every selected ticker is shown after "
-        "you run, so you can spot exactly which ones are limiting your window.\n\n"
+        "you run.\n\n"
         "\U0001F553 **Custom analysis window:** run the optimization as if today were an earlier date.\n\n"
         "\U0001F9EA **Backtesting:** see how the optimized weights would have actually performed on unseen "
         "data, with the exact % return earned by each strategy shown in a table.\n\n"
