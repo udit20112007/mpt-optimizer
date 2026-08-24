@@ -13,6 +13,17 @@ A hard cap of 100 assets per optimization run is enforced regardless of
 how many are selected, to keep Monte Carlo + SLSQP runtime and Yahoo
 Finance API load manageable.
 
+Data policy \u2014 full history, always growing, never shrinking:
+    The app fetches each ticker's FULL available price history (from its
+    IPO/listing date to today, via yfinance period="max") rather than a
+    fixed lookback window. Results are cached for 24h, so every day this
+    cache refreshes it automatically picks up the newest trading data \u2014
+    including a brand new year once it exists \u2014 while every prior year
+    already fetched remains part of the same continuous series. Users can
+    optionally restrict the OPTIMIZATION to a shorter recent window via a
+    slider, but that only slices a view of the cached full history; it
+    never discards or re-fetches a smaller dataset.
+
 Run locally:
     pip install streamlit yfinance numpy pandas scipy plotly
     streamlit run mpt_optimizer.py
@@ -40,7 +51,7 @@ from scipy.optimize import minimize
 
 st.set_page_config(page_title="MPT Optimizer", layout="wide")
 st.title("\U0001F4C8 Modern Portfolio Theory (MPT) Optimizer")
-st.caption("Markowitz Efficient Frontier \u00b7 Monte Carlo Simulation \u00b7 SLSQP Optimization \u00b7 US + India, Stocks + Funds")
+st.caption("Markowitz Efficient Frontier \u00b7 Monte Carlo Simulation \u00b7 SLSQP Optimization \u00b7 Full-History US + India Universe")
 
 MAX_ASSETS = 100  # hard cap per optimization run
 
@@ -71,6 +82,7 @@ US_TOP100 = {
     "MMC": "Marsh & McLennan", "PYPL": "PayPal Holdings", "ADP": "Automatic Data Processing", "CB": "Chubb",
     "MDT": "Medtronic", "CI": "Cigna Group", "SO": "Southern Co", "REGN": "Regeneron Pharmaceuticals",
     "DUK": "Duke Energy", "ELV": "Elevance Health", "ICE": "Intercontinental Exchange", "APD": "Air Products",
+    "SBUX": "Starbucks", "CME": "CME Group", "ZTS": "Zoetis", "EQIX": "Equinix", "PLD": "Prologis",
 }
 
 INDIA_TOP100 = {
@@ -122,7 +134,7 @@ US_FUNDS_50 = {
     "VPMAX": "Vanguard PRIMECAP", "FDGRX": "Fidelity Growth Company", "FBGRX": "Fidelity Blue Chip Growth", "FLPSX": "Fidelity Low-Priced Stock",
     "FDVLX": "Fidelity Value", "FMAGX": "Fidelity Magellan", "FSKAX": "Fidelity Total Market Index", "FTIHX": "Fidelity Total International Index",
     "FSPGX": "Fidelity Large Cap Growth Index", "FXNAX": "Fidelity US Bond Index", "JABAX": "Janus Henderson Balanced", "JAENX": "Janus Henderson Enterprise",
-    "MEIKX": "MFS Massachusetts Investors Trust", "OAKBX": "Oakmark Equity & Income",
+    "MEIKX": "MFS Massachusetts Investors Trust", "OAKBX": "Oakmark Equity & Income", "PRGFX": "T. Rowe Price Growth Stock", "PRWCX": "T. Rowe Price Capital Appreciation",
 }
 
 # Note: Yahoo Finance / yfinance does not carry Indian mutual fund NAVs
@@ -199,7 +211,17 @@ if n_selected > MAX_ASSETS:
 
 st.sidebar.caption(f"**{len(tickers)} / {MAX_ASSETS} assets selected for this run**")
 
-years_back = st.sidebar.slider("Years of history", 1, 10, 3)
+st.sidebar.subheader("Historical window")
+st.sidebar.caption(
+    "The app always fetches each ticker's **full available history** (from listing date to today) "
+    "and caches it for 24h. This slider only restricts which portion of that full dataset is used "
+    "for the statistics/optimization below \u2014 it never discards or re-fetches a shorter series."
+)
+analysis_years = st.sidebar.slider(
+    "Years of full history to use for optimization (0 = use everything available)",
+    0, 30, 0
+)
+
 n_portfolios = st.sidebar.number_input("Monte Carlo simulations", 1000, 200000, 50000, step=1000)
 risk_free_rate = st.sidebar.number_input("Risk-free rate (annual, decimal)", 0.0, 0.20, 0.065, step=0.005)
 allow_short = st.sidebar.checkbox("Allow short selling (weights can be negative)", value=False)
@@ -207,7 +229,7 @@ max_weight = st.sidebar.slider("Max weight per asset (concentration cap)", 0.05,
 
 run_btn = st.sidebar.button("Run Optimization", type="primary")
 
-# ---------------- Data fetching (robust to Yahoo rate limits) ----------------
+# ---------------- Data fetching (full history, robust to Yahoo rate limits) ----------------
 CHUNK_SIZE = 15
 MAX_RETRIES = 3
 BASE_BACKOFF = 2.0
@@ -231,10 +253,11 @@ def _extract_close(df, tk):
         return None
     return None
 
-def _download_chunk(chunk, start, end):
+def _download_chunk_max(chunk):
+    """Download the FULL available price history (period='max') for a chunk of tickers."""
     for attempt in range(MAX_RETRIES):
         try:
-            data = yf.download(chunk, start=start, end=end, auto_adjust=True,
+            data = yf.download(chunk, period="max", auto_adjust=True,
                                 progress=False, group_by="ticker", threads=True)
             if data is not None and not data.empty:
                 return data
@@ -243,10 +266,11 @@ def _download_chunk(chunk, start, end):
         time.sleep(BASE_BACKOFF * (2 ** attempt))
     return None
 
-def _download_single(tk, start, end):
+def _download_single_max(tk):
+    """Per-ticker fallback fetching the FULL available price history."""
     for attempt in range(MAX_RETRIES):
         try:
-            hist = yf.Ticker(tk).history(start=start, end=end, auto_adjust=True)
+            hist = yf.Ticker(tk).history(period="max", auto_adjust=True)
             if hist is not None and not hist.empty and "Close" in hist.columns:
                 s = hist["Close"].copy()
                 s.index = pd.to_datetime(s.index).tz_localize(None)
@@ -257,16 +281,20 @@ def _download_single(tk, start, end):
     return None
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def fetch_prices(tickers, years):
-    end = pd.Timestamp.today()
-    start = end - pd.DateOffset(years=years)
-
+def fetch_full_history(tickers):
+    """
+    Fetches the maximum available price history per ticker (from each
+    company's/fund's listing date up to today) rather than a fixed lookback
+    window. Every 24h cache refresh automatically includes any newly
+    completed trading year; every year already fetched stays intact in the
+    same continuous series across runs.
+    """
     series_map = {}
     remaining = list(tickers)
 
     for i in range(0, len(remaining), CHUNK_SIZE):
         chunk = remaining[i:i + CHUNK_SIZE]
-        data = _download_chunk(chunk, start, end)
+        data = _download_chunk_max(chunk)
         if data is None:
             continue
         for tk in chunk:
@@ -281,7 +309,7 @@ def fetch_prices(tickers, years):
 
     missing = [t for t in tickers if t not in series_map]
     for tk in missing:
-        s = _download_single(tk, start, end)
+        s = _download_single_max(tk)
         if s is not None and not s.dropna().empty:
             series_map[tk] = s
         time.sleep(0.5)
@@ -291,7 +319,7 @@ def fetch_prices(tickers, years):
 
     prices = pd.DataFrame(series_map)
     prices = prices.dropna(axis=1, how="all")
-    prices = prices.ffill().dropna(how="any")
+    prices = prices.sort_index().ffill()
     return prices
 
 def portfolio_perf(weights, mean_rets, cov):
@@ -331,10 +359,10 @@ if run_btn:
         st.error("Select at least 2 tickers.")
         st.stop()
 
-    with st.spinner(f"Downloading price history for {len(tickers)} tickers (chunked, with retries)..."):
-        prices = fetch_prices(tuple(tickers), years_back)
+    with st.spinner(f"Downloading FULL available price history for {len(tickers)} tickers (chunked, with retries)..."):
+        full_prices = fetch_full_history(tuple(tickers))
 
-    dropped = set(tickers) - set(prices.columns if not prices.empty else [])
+    dropped = set(tickers) - set(full_prices.columns if not full_prices.empty else [])
     if dropped:
         st.warning(
             f"Could not fetch data for: {', '.join(sorted(dropped))} \u2014 excluded from optimization. "
@@ -342,13 +370,33 @@ if run_btn:
             "IPs. Click **Run Optimization** again in 30\u201360 seconds, or reduce the number of selected tickers."
         )
 
-    if prices.empty or prices.shape[1] < 2:
+    if full_prices.empty or full_prices.shape[1] < 2:
         st.error(
             "Could not fetch enough price data. This is almost always Yahoo Finance temporarily rate-limiting "
             "requests, not a bug in the app. Wait about a minute and click **Run Optimization** again, try a "
             "smaller ticker selection, or reduce Monte Carlo simulations to retry faster."
         )
         st.stop()
+
+    earliest = full_prices.index.min().date()
+    latest = full_prices.index.max().date()
+    total_years = (full_prices.index.max() - full_prices.index.min()).days / 365.25
+
+    if analysis_years and analysis_years > 0:
+        cutoff = full_prices.index.max() - pd.DateOffset(years=analysis_years)
+        prices = full_prices[full_prices.index >= cutoff].dropna(how="any")
+        window_desc = f"last {analysis_years} year(s) of the full history"
+    else:
+        prices = full_prices.dropna(how="any")
+        window_desc = "the ENTIRE available history"
+
+    st.info(
+        f"\U0001F4C5 Full cached history spans **{earliest} \u2192 {latest}** (~{total_years:.1f} years, common across "
+        f"all selected tickers after alignment). This run uses **{window_desc}**: "
+        f"**{prices.index.min().date()} \u2192 {prices.index.max().date()}** ({len(prices)} trading days). "
+        "The full dataset stays cached and intact regardless of this choice \u2014 nothing is discarded between runs, "
+        "and it will automatically extend by another year once that year's trading data exists on Yahoo Finance."
+    )
 
     assets = list(prices.columns)
     n = len(assets)
@@ -461,8 +509,8 @@ if run_btn:
     st.caption(
         "Gold star = tangency portfolio (max Sharpe). Blue diamond = global minimum-variance portfolio. "
         "Red curve = theoretical efficient frontier solved via constrained SLSQP optimization for each target return. "
-        f"Universe: {n} assets. Mixed currencies (USD/INR) are not FX-adjusted; returns/volatility are computed "
-        "independently per asset's native price series."
+        f"Universe: {n} assets, using {window_desc}. Mixed currencies (USD/INR) are not FX-adjusted; "
+        "returns/volatility are computed independently per asset's native price series."
     )
 else:
     st.info("Choose one or more universes and assets in the sidebar (max 100 per run), then click **Run Optimization**.")
@@ -473,5 +521,10 @@ else:
         "- **Top 50 US Mutual Funds** by AUM (VTSAX, VFIAX, FXAIX...)\n"
         "- **Top 50 India ETFs** (substituting Indian mutual funds, which have no Yahoo Finance data \u2014 "
         "NIFTYBEES.NS, GOLDBEES.NS, BANKBEES.NS...)\n\n"
-        "You can mix and match across universes, or add custom tickers, up to a **100-asset cap** per optimization run."
+        "You can mix and match across universes, or add custom tickers, up to a **100-asset cap** per optimization run.\n\n"
+        "\U0001F4C5 **Full-history data policy:** every ticker's entire available price history (from listing date to "
+        "today) is fetched and cached for 24 hours. As each new trading day and year passes, the next cache refresh "
+        "automatically includes it \u2014 no manual update needed \u2014 while every year already fetched remains part "
+        "of the same permanent series. Use the 'Years of full history to use' slider to optionally focus the "
+        "optimization on a recent window without ever discarding the full cached dataset."
     )
