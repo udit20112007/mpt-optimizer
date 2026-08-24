@@ -8,9 +8,12 @@ Efficient Frontier.
 Universe: Top 100 US stocks, Top 100 India (NSE) stocks, Top 50 US mutual
 funds, and Top 50 India-listed ETFs.
 
-Note: Marsh McLennan changed its NYSE ticker from MMC to MRSH effective
-January 14, 2026 (company rebrand to "Marsh"). This universe uses the
-current symbol MRSH.
+Ticker rename notes (Yahoo Finance only serves data under CURRENT symbols):
+- Marsh McLennan: MMC -> MRSH, effective Jan 14, 2026 (company rebrand to "Marsh")
+- United Spirits: MCDOWELL-N.NS -> UNITDSPR.NS
+- Tata Motors (passenger vehicle business): TATAMOTORS.NS -> TMPV.NS, effective
+  Oct 24, 2025 (demerger into passenger vehicle and commercial vehicle entities)
+- Zomato: ZOMATO.NS -> ETERNAL.NS, effective Apr 9, 2025 (corporate rebrand to Eternal Ltd)
 
 A hard cap of 100 assets per optimization run is enforced regardless of
 how many are selected, to keep Monte Carlo + SLSQP runtime and Yahoo
@@ -29,9 +32,8 @@ Custom analysis window (years + as-of date):
     "as of" end date for that window (defaults to today). This lets you
     run, for example, "5 years of data ending 2023-12-31" and see exactly
     what the statistics and efficient frontier looked like using only
-    data available up to that historical point \u2014 useful for point-in-time
-    analysis or comparing different historical periods. This only slices
-    the already-cached full history; it never re-fetches or discards data.
+    data available up to that historical point. This only slices the
+    already-cached full history; it never re-fetches or discards data.
 
 Run locally:
     pip install streamlit yfinance numpy pandas scipy plotly
@@ -97,7 +99,7 @@ INDIA_TOP100 = {
     "ULTRACEMCO.NS": "UltraTech Cement", "LICI.NS": "Life Insurance Corp of India", "WIPRO.NS": "Wipro",
     "ONGC.NS": "Oil & Natural Gas Corp", "POWERGRID.NS": "Power Grid Corp", "BAJAJFINSV.NS": "Bajaj Finserv",
     "ASIANPAINT.NS": "Asian Paints", "NESTLEIND.NS": "Nestle India", "COALINDIA.NS": "Coal India",
-    "TATAMOTORS.NS": "Tata Motors", "JSWSTEEL.NS": "JSW Steel", "TATASTEEL.NS": "Tata Steel", "GRASIM.NS": "Grasim Industries",
+    "TMPV.NS": "Tata Motors Passenger Vehicles", "JSWSTEEL.NS": "JSW Steel", "TATASTEEL.NS": "Tata Steel", "GRASIM.NS": "Grasim Industries",
     "TECHM.NS": "Tech Mahindra", "HINDALCO.NS": "Hindalco Industries", "BAJAJ-AUTO.NS": "Bajaj Auto",
     "DRREDDY.NS": "Dr. Reddy's Labs", "CIPLA.NS": "Cipla", "EICHERMOT.NS": "Eicher Motors", "APOLLOHOSP.NS": "Apollo Hospitals",
     "SBILIFE.NS": "SBI Life Insurance", "HDFCLIFE.NS": "HDFC Life Insurance", "DIVISLAB.NS": "Divi's Laboratories",
@@ -108,10 +110,10 @@ INDIA_TOP100 = {
     "CANBK.NS": "Canara Bank", "IOC.NS": "Indian Oil Corp", "BPCL.NS": "Bharat Petroleum",
     "GAIL.NS": "GAIL India", "SIEMENS.NS": "Siemens Ltd", "ABB.NS": "ABB India", "CGPOWER.NS": "CG Power & Industrial",
     "SOLARINDS.NS": "Solar Industries India", "HAL.NS": "Hindustan Aeronautics", "BEL.NS": "Bharat Electronics",
-    "MAZDOCK.NS": "Mazagon Dock Shipbuilders", "IRFC.NS": "Indian Railway Finance Corp", "ZOMATO.NS": "Eternal (Zomato)",
+    "MAZDOCK.NS": "Mazagon Dock Shipbuilders", "IRFC.NS": "Indian Railway Finance Corp", "ETERNAL.NS": "Eternal (Zomato)",
     "PAYTM.NS": "One 97 Communications", "NYKAA.NS": "FSN E-Commerce (Nykaa)", "DMART.NS": "Avenue Supermarts",
     "TRENT.NS": "Trent Ltd", "PGHH.NS": "Procter & Gamble Hygiene", "COLPAL.NS": "Colgate-Palmolive India",
-    "MCDOWELL-N.NS": "United Spirits", "VBL.NS": "Varun Beverages", "PAGEIND.NS": "Page Industries",
+    "UNITDSPR.NS": "United Spirits", "VBL.NS": "Varun Beverages", "PAGEIND.NS": "Page Industries",
     "MOTHERSON.NS": "Samvardhana Motherson", "BOSCHLTD.NS": "Bosch Ltd", "TVSMOTOR.NS": "TVS Motor Co",
     "HEROMOTOCO.NS": "Hero MotoCorp", "BALKRISIND.NS": "Balkrishna Industries", "MRF.NS": "MRF Ltd",
     "LUPIN.NS": "Lupin Ltd", "AUROPHARMA.NS": "Aurobindo Pharma", "TORNTPHARM.NS": "Torrent Pharmaceuticals",
@@ -391,7 +393,6 @@ if run_btn:
     latest = full_prices.index.max().date()
     total_years = (full_prices.index.max() - full_prices.index.min()).days / 365.25
 
-    # ---- Apply custom as-of date + years window ----
     effective_end = pd.Timestamp(asof_date) if asof_date is not None else full_prices.index.max()
     effective_end = min(effective_end, full_prices.index.max())
 
