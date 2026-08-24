@@ -20,12 +20,18 @@ Data policy \u2014 full history, always growing, never shrinking:
     The app fetches each ticker's FULL available price history (from its
     IPO/listing date to today, via yfinance period="max") rather than a
     fixed lookback window. Results are cached for 24h, so every day this
-    cache refreshes it automatically picks up the newest trading data \u2014
-    including a brand new year once it exists \u2014 while every prior year
-    already fetched remains part of the same continuous series. Users can
-    optionally restrict the OPTIMIZATION to a shorter recent window via a
-    slider, but that only slices a view of the cached full history; it
-    never discards or re-fetches a smaller dataset.
+    cache refreshes it automatically picks up the newest trading data,
+    while every prior year already fetched remains part of the same
+    continuous series.
+
+Custom analysis window (years + as-of date):
+    Users can pick BOTH how many years of history to analyze AND the
+    "as of" end date for that window (defaults to today). This lets you
+    run, for example, "5 years of data ending 2023-12-31" and see exactly
+    what the statistics and efficient frontier looked like using only
+    data available up to that historical point \u2014 useful for point-in-time
+    analysis or comparing different historical periods. This only slices
+    the already-cached full history; it never re-fetches or discards data.
 
 Run locally:
     pip install streamlit yfinance numpy pandas scipy plotly
@@ -212,12 +218,25 @@ st.sidebar.caption(f"**{len(tickers)} / {MAX_ASSETS} assets selected for this ru
 st.sidebar.subheader("Historical window")
 st.sidebar.caption(
     "The app always fetches each ticker's **full available history** (from listing date to today) "
-    "and caches it for 24h. This slider only restricts which portion of that full dataset is used "
-    "for the statistics/optimization below \u2014 it never discards or re-fetches a shorter series."
+    "and caches it for 24h. The controls below only choose which slice of that cached data is used "
+    "for the statistics/optimization \u2014 they never discard or re-fetch a shorter series."
 )
-analysis_years = st.sidebar.slider(
-    "Years of full history to use for optimization (0 = use everything available)",
-    0, 30, 0
+
+use_custom_asof = st.sidebar.checkbox(
+    "Use a custom 'as of' end date (point-in-time analysis)", value=False
+)
+if use_custom_asof:
+    asof_date = st.sidebar.date_input(
+        "As-of date (analysis uses only data up to and including this date)",
+        value=pd.Timestamp.today().date(),
+        max_value=pd.Timestamp.today().date()
+    )
+else:
+    asof_date = None
+
+analysis_years = st.sidebar.number_input(
+    "Years of history to use, counting back from the as-of date (0 = use everything available up to that date)",
+    min_value=0.0, max_value=50.0, value=0.0, step=0.5
 )
 
 n_portfolios = st.sidebar.number_input("Monte Carlo simulations", 1000, 200000, 50000, step=1000)
@@ -356,7 +375,8 @@ if run_btn:
         st.warning(
             f"Could not fetch data for: {', '.join(sorted(dropped))} \u2014 excluded from optimization. "
             "Yahoo Finance sometimes rate-limits large batch requests (HTTP 429), especially on shared cloud "
-            "IPs. Click **Run Optimization** again in 30\u201360 seconds, or reduce the number of selected tickers."
+            "IPs, or the ticker may have changed/delisted. Click **Run Optimization** again in 30\u201360 seconds, "
+            "or reduce the number of selected tickers."
         )
 
     if full_prices.empty or full_prices.shape[1] < 2:
@@ -371,13 +391,33 @@ if run_btn:
     latest = full_prices.index.max().date()
     total_years = (full_prices.index.max() - full_prices.index.min()).days / 365.25
 
+    # ---- Apply custom as-of date + years window ----
+    effective_end = pd.Timestamp(asof_date) if asof_date is not None else full_prices.index.max()
+    effective_end = min(effective_end, full_prices.index.max())
+
+    windowed = full_prices[full_prices.index <= effective_end]
+
+    if windowed.empty:
+        st.error(
+            f"No data available on or before {effective_end.date()}. The earliest available data starts "
+            f"{earliest}. Pick a later as-of date."
+        )
+        st.stop()
+
     if analysis_years and analysis_years > 0:
-        cutoff = full_prices.index.max() - pd.DateOffset(years=analysis_years)
-        prices = full_prices[full_prices.index >= cutoff].dropna(how="any")
-        window_desc = f"last {analysis_years} year(s) of the full history"
+        cutoff = effective_end - pd.DateOffset(years=analysis_years)
+        prices = windowed[windowed.index >= cutoff].dropna(how="any")
+        window_desc = f"{analysis_years} year(s) ending {effective_end.date()}"
     else:
-        prices = full_prices.dropna(how="any")
-        window_desc = "the ENTIRE available history"
+        prices = windowed.dropna(how="any")
+        window_desc = f"everything available up to {effective_end.date()}"
+
+    if prices.shape[0] < 30:
+        st.error(
+            f"Only {prices.shape[0]} trading days available in this window \u2014 too few for reliable statistics. "
+            "Pick a longer window, an earlier as-of date, or fewer years back."
+        )
+        st.stop()
 
     assets = list(prices.columns)
     n = len(assets)
@@ -407,7 +447,8 @@ if run_btn:
 - **Assets used:** {n} (requested {len(tickers)}, {len(dropped)} unavailable)
 - **Universe mix:** {", ".join(f"{v} {k}" for k, v in n_by_universe.items() if v > 0)}
 - **Full cached history:** {earliest} \u2192 {latest} (~{total_years:.1f} years)
-- **Window used this run:** {prices.index.min().date()} \u2192 {prices.index.max().date()} ({len(prices)} trading days) \u2014 {window_desc}
+- **Analysis window:** {window_desc}
+- **Actual data range used:** {prices.index.min().date()} \u2192 {prices.index.max().date()} ({len(prices)} trading days)
         """)
     with syn_col2:
         st.markdown(f"""
@@ -419,8 +460,8 @@ if run_btn:
 - **Most diversifying pair:** {NAME_LOOKUP.get(min_pair[0], min_pair[0])} & {NAME_LOOKUP.get(min_pair[1], min_pair[1])} ({corr_no_diag.loc[min_pair]:.2f})
         """)
     st.caption(
-        "This synopsis summarizes what was actually fetched and computed for this run. The full history "
-        "stays cached for 24h regardless of which window is analyzed here."
+        "This synopsis reflects only the selected analysis window \u2014 useful for point-in-time comparisons. "
+        "The full history stays cached for 24h regardless of which window is analyzed here."
     )
 
     st.subheader(f"1. Historical Statistics ({n} assets)")
@@ -526,7 +567,7 @@ if run_btn:
     st.caption(
         "Gold star = tangency portfolio (max Sharpe). Blue diamond = global minimum-variance portfolio. "
         "Red curve = theoretical efficient frontier solved via constrained SLSQP optimization for each target return. "
-        f"Universe: {n} assets, using {window_desc}. Mixed currencies (USD/INR) are not FX-adjusted; "
+        f"Universe: {n} assets, analysis window: {window_desc}. Mixed currencies (USD/INR) are not FX-adjusted; "
         "returns/volatility are computed independently per asset's native price series."
     )
 else:
@@ -539,8 +580,10 @@ else:
         "- **Top 50 India ETFs** (NIFTYBEES.NS, GOLDBEES.NS, BANKBEES.NS...)\n\n"
         "You can mix and match across universes, or add custom tickers, up to a **100-asset cap** per optimization run.\n\n"
         "\U0001F4C5 **Full-history data policy:** every ticker's entire available price history (from listing date to "
-        "today) is fetched and cached for 24 hours, automatically extending as new years pass. Use the "
-        "'Years of full history to use' slider to optionally focus on a recent window without discarding the full "
-        "cached dataset.\n\n"
-        "After running, a **Data Synopsis** section summarizes what was fetched before you review the optimization results."
+        "today) is fetched and cached for 24 hours, automatically extending as new years pass.\n\n"
+        "\U0001F553 **Custom analysis window:** enable 'Use a custom as of end date' in the sidebar to run the "
+        "optimization as if today were an earlier date (e.g., analyze 5 years of data ending 2023-12-31). Combine "
+        "with 'Years of history to use' to define exactly which slice of the cached full history to analyze \u2014 "
+        "nothing is ever discarded, this just changes which window is read.\n\n"
+        "After running, a **Data Synopsis** section summarizes what was fetched and which window was analyzed."
     )
