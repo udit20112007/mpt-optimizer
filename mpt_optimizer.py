@@ -15,6 +15,13 @@ Ticker rename notes (Yahoo Finance only serves data under CURRENT symbols):
 - Zomato: ZOMATO.NS -> ETERNAL.NS
 - LTIMindtree: LTIM.NS -> LTM.NS, effective Feb 11, 2026
 
+Fund universe note: SPAXX and FZCXX (Fidelity money market funds) were
+removed. Money market funds have a fixed $1.00 NAV by SEC design (Rule
+2a-7), meaning zero day-to-day price variance -- this breaks mean-variance
+optimization, which requires meaningful volatility to trade off against
+return, and produces a singular (non-invertible) covariance matrix.
+Replaced with PRGFX and PRWCX (T. Rowe Price funds with real price movement).
+
 Search UX:
     All 300 tickers across every universe are combined into ONE searchable
     list with Streamlit's built-in fuzzy-search-as-you-type.
@@ -28,6 +35,10 @@ Data policy \u2014 full history, always growing, never shrinking:
 Custom analysis window (years + as-of date):
     Pick both a number of years AND an "as of" end date for point-in-time
     historical analysis, slicing the cached full history without discarding it.
+    (Note: no error is raised if the actual usable window is shorter than
+    requested due to a short-history ticker -- the history-length table
+    in the Data Synopsis surfaces this information instead, without an
+    intrusive error banner.)
 
 Shortest-history diagnostics (full history-length table):
     Because all tickers must be aligned to a common date range, the analysis
@@ -39,9 +50,7 @@ Backtesting:
     Splits the analysis window into an in-sample training period and an
     out-of-sample test period, freezing weights trained only on the past
     and comparing against an equal-weight benchmark. Test-period % returns
-    for every strategy are shown in a clearly labeled table. Color-gradient
-    styling on that table degrades gracefully if matplotlib is unavailable
-    (it is an optional pandas Styler dependency) instead of crashing the app.
+    for every strategy are shown in a clearly labeled table.
 
 Plain-language chart summaries:
     After the efficient frontier chart and (if enabled) the backtest chart,
@@ -137,8 +146,8 @@ INDIA_TOP100 = {
 
 US_FUNDS_50 = {
     "VTSAX": "Vanguard Total Stock Market Index", "VFIAX": "Vanguard 500 Index", "FXAIX": "Fidelity 500 Index", "VTIAX": "Vanguard Total International Stock Index",
-    "VBTLX": "Vanguard Total Bond Market Index", "SPAXX": "Fidelity Government Money Market", "VIGAX": "Vanguard Growth Index", "FCNTX": "Fidelity Contrafund",
-    "FZCXX": "Fidelity Government Cash Reserves", "VINIX": "Vanguard Institutional Index", "VTWAX": "Vanguard Total World Stock Index", "VWENX": "Vanguard Wellington",
+    "VBTLX": "Vanguard Total Bond Market Index", "PRGFX": "T. Rowe Price Growth Stock", "VIGAX": "Vanguard Growth Index", "FCNTX": "Fidelity Contrafund",
+    "PRWCX": "T. Rowe Price Capital Appreciation", "VINIX": "Vanguard Institutional Index", "VTWAX": "Vanguard Total World Stock Index", "VWENX": "Vanguard Wellington",
     "VBIAX": "Vanguard Balanced Index", "VIMAX": "Vanguard Mid-Cap Index", "FCTDX": "Strategic Advisers Fidelity US Total Stock", "VVIAX": "Vanguard Value Index",
     "DODGX": "Dodge & Cox Stock", "VSMAX": "Vanguard Small-Cap Index", "VTABX": "Vanguard International Bond Index", "TRBCX": "T. Rowe Price Blue Chip Growth",
     "AGTHX": "American Funds Growth Fund of America", "AIVSX": "American Funds Investment Co of America", "AWSHX": "American Funds Washington Mutual", "ANCFX": "American Funds Fundamental Investors",
@@ -578,16 +587,6 @@ if run_btn:
         (history_table["Years of History"] >= min(1.0, requested_years_for_flag * 0.1))
     ]
 
-    if analysis_years and analysis_years > 0 and actual_window_years < analysis_years * 0.9:
-        st.error(
-            f"\u26A0\uFE0F **You requested {analysis_years} years, but the actual usable window is only "
-            f"~{actual_window_years:.1f} years.** This is because **{NAME_LOOKUP.get(bottleneck_ticker, bottleneck_ticker)} "
-            f"({bottleneck_ticker})** only has **{bottleneck_years:.1f} years** of price history "
-            f"(starts {bottleneck_start.date()}), and every asset must share the same date range. See the "
-            "history-length table below for every ticker's available range. **To fix:** remove short-history "
-            "tickers, or enable 'Auto-exclude tickers with unusually short history' in the sidebar."
-        )
-
     min_days_needed = 60 if run_backtest else 30
     if prices.shape[0] < min_days_needed:
         st.error(
@@ -648,7 +647,7 @@ if run_btn:
         )
         st.caption(
             "These tickers have less history than your requested window, so the FINAL analysis window is capped "
-            "by the shortest one among them. Remove them or lower your requested years to avoid this."
+            "by the shortest one among them."
         )
 
     with st.expander("\U0001F4CA Full history-length table for ALL selected tickers"):
@@ -867,7 +866,7 @@ else:
         "ticker symbols across all 300 available assets.\n\n"
         "\U0001F4C5 **Full-history data policy:** every ticker's entire available price history is fetched and "
         "cached for 24 hours.\n\n"
-        "\u26A0\uFE0F **Important:** your analysis window is capped by whichever selected ticker has the "
+        "\u26A0\uFE0F **Note:** your analysis window is capped by whichever selected ticker has the "
         "shortest available history. A full history-length table for every selected ticker is shown after "
         "you run.\n\n"
         "\U0001F553 **Custom analysis window:** run the optimization as if today were an earlier date.\n\n"
