@@ -32,13 +32,6 @@ Deploy free & public:
     1. Push this file + requirements.txt to a public GitHub repo.
     2. Go to https://share.streamlit.io -> "New app" -> point to the repo.
     3. Streamlit Community Cloud builds and hosts it at a public URL for free.
-
-Note on yfinance reliability:
-    yfinance scrapes Yahoo Finance (no official API), so it is occasionally
-    rate-limited (HTTP 429 "Too Many Requests"), especially for large batch
-    requests or on shared cloud IPs like Streamlit Community Cloud. This file
-    mitigates that with: batched chunked downloads, retry-with-backoff, a
-    per-ticker fallback, and 24h caching so repeated runs don't re-hit the API.
 """
 
 import time
@@ -55,7 +48,7 @@ st.caption("Markowitz Efficient Frontier \u00b7 Monte Carlo Simulation \u00b7 SL
 
 MAX_ASSETS = 100  # hard cap per optimization run
 
-# ---------------- Static universes ----------------
+# ---------------- Static universes (each verified to contain exactly N tickers) ----------------
 US_TOP100 = {
     "NVDA": "NVIDIA", "AAPL": "Apple", "GOOGL": "Alphabet", "MSFT": "Microsoft",
     "AMZN": "Amazon.com", "AVGO": "Broadcom", "TSLA": "Tesla", "META": "Meta Platforms",
@@ -82,7 +75,6 @@ US_TOP100 = {
     "MMC": "Marsh & McLennan", "PYPL": "PayPal Holdings", "ADP": "Automatic Data Processing", "CB": "Chubb",
     "MDT": "Medtronic", "CI": "Cigna Group", "SO": "Southern Co", "REGN": "Regeneron Pharmaceuticals",
     "DUK": "Duke Energy", "ELV": "Elevance Health", "ICE": "Intercontinental Exchange", "APD": "Air Products",
-    "SBUX": "Starbucks", "CME": "CME Group", "ZTS": "Zoetis", "EQIX": "Equinix", "PLD": "Prologis",
 }
 
 INDIA_TOP100 = {
@@ -137,9 +129,6 @@ US_FUNDS_50 = {
     "MEIKX": "MFS Massachusetts Investors Trust", "OAKBX": "Oakmark Equity & Income", "PRGFX": "T. Rowe Price Growth Stock", "PRWCX": "T. Rowe Price Capital Appreciation",
 }
 
-# Note: Yahoo Finance / yfinance does not carry Indian mutual fund NAVs
-# (those live with AMFI, not Yahoo). This bucket uses India-listed ETFs
-# instead, which trade on NSE with real tickers yfinance can fetch.
 INDIA_ETFS_50 = {
     "NIFTYBEES.NS": "Nippon India ETF Nifty BeES", "JUNIORBEES.NS": "Nippon India ETF Junior BeES", "BANKBEES.NS": "Nippon India ETF Bank BeES", "GOLDBEES.NS": "Nippon India ETF Gold BeES",
     "ICICINIFTY.NS": "ICICI Prudential Nifty ETF", "HDFCNIFTY.NS": "HDFC Nifty 50 ETF", "SBINIFTY.NS": "SBI Nifty 50 ETF", "UTINIFTETF.NS": "UTI Nifty 50 ETF",
@@ -156,11 +145,16 @@ INDIA_ETFS_50 = {
     "CONSUMBEES.NS": "Nippon India ETF Nifty India Consumption", "PHARMABEES.NS": "Nippon India ETF Nifty Pharma", "METALIETF.NS": "ICICI Prudential Nifty Metal ETF", "FMCGIETF.NS": "ICICI Prudential Nifty FMCG ETF",
 }
 
+assert len(US_TOP100) == 100, f"US_TOP100 has {len(US_TOP100)} entries, expected 100"
+assert len(INDIA_TOP100) == 100, f"INDIA_TOP100 has {len(INDIA_TOP100)} entries, expected 100"
+assert len(US_FUNDS_50) == 50, f"US_FUNDS_50 has {len(US_FUNDS_50)} entries, expected 50"
+assert len(INDIA_ETFS_50) == 50, f"INDIA_ETFS_50 has {len(INDIA_ETFS_50)} entries, expected 50"
+
 ALL_UNIVERSES = {
     "Top 100 US Stocks": US_TOP100,
     "Top 100 India (NSE) Stocks": INDIA_TOP100,
     "Top 50 US Mutual Funds": US_FUNDS_50,
-    "Top 50 India ETFs (fund substitute)": INDIA_ETFS_50,
+    "Top 50 India ETFs": INDIA_ETFS_50,
 }
 NAME_LOOKUP = {}
 for _u in ALL_UNIVERSES.values():
@@ -168,10 +162,6 @@ for _u in ALL_UNIVERSES.values():
 
 # ---------------- Sidebar inputs ----------------
 st.sidebar.header("Configuration")
-st.sidebar.caption(
-    "\u26A0\uFE0F Indian mutual funds (AMFI NAVs) are not available on Yahoo Finance / yfinance. "
-    "The 'India ETFs' bucket substitutes NSE-listed ETFs, which do have real tickers and price history."
-)
 
 bucket_choices = st.sidebar.multiselect(
     "Select one or more universes to pull tickers from",
@@ -254,7 +244,6 @@ def _extract_close(df, tk):
     return None
 
 def _download_chunk_max(chunk):
-    """Download the FULL available price history (period='max') for a chunk of tickers."""
     for attempt in range(MAX_RETRIES):
         try:
             data = yf.download(chunk, period="max", auto_adjust=True,
@@ -267,7 +256,6 @@ def _download_chunk_max(chunk):
     return None
 
 def _download_single_max(tk):
-    """Per-ticker fallback fetching the FULL available price history."""
     for attempt in range(MAX_RETRIES):
         try:
             hist = yf.Ticker(tk).history(period="max", auto_adjust=True)
@@ -282,13 +270,6 @@ def _download_single_max(tk):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_full_history(tickers):
-    """
-    Fetches the maximum available price history per ticker (from each
-    company's/fund's listing date up to today) rather than a fixed lookback
-    window. Every 24h cache refresh automatically includes any newly
-    completed trading year; every year already fetched stays intact in the
-    same continuous series across runs.
-    """
     series_map = {}
     remaining = list(tickers)
 
@@ -390,21 +371,55 @@ if run_btn:
         prices = full_prices.dropna(how="any")
         window_desc = "the ENTIRE available history"
 
-    st.info(
-        f"\U0001F4C5 Full cached history spans **{earliest} \u2192 {latest}** (~{total_years:.1f} years, common across "
-        f"all selected tickers after alignment). This run uses **{window_desc}**: "
-        f"**{prices.index.min().date()} \u2192 {prices.index.max().date()}** ({len(prices)} trading days). "
-        "The full dataset stays cached and intact regardless of this choice \u2014 nothing is discarded between runs, "
-        "and it will automatically extend by another year once that year's trading data exists on Yahoo Finance."
-    )
-
     assets = list(prices.columns)
     n = len(assets)
 
     log_returns = np.log(prices / prices.shift(1)).dropna()
     mean_rets = (log_returns.mean() * 252).values
     cov = (log_returns.cov() * 252).values
-    corr = log_returns.corr().values
+    corr_full = log_returns.corr()
+    corr = corr_full.values
+
+    # ---------------- Data synopsis ----------------
+    st.subheader("\U0001F4CB Data Synopsis")
+    per_ticker_span = {
+        tk: (full_prices[tk].dropna().index.min().date(), full_prices[tk].dropna().index.max().date())
+        for tk in full_prices.columns
+    }
+    n_by_universe = {}
+    for uname, umap in ALL_UNIVERSES.items():
+        n_by_universe[uname] = sum(1 for a in assets if a in umap)
+
+    best_ret_idx = int(np.argmax(mean_rets))
+    worst_ret_idx = int(np.argmin(mean_rets))
+    best_vol_idx = int(np.argmin(np.sqrt(np.diag(cov))))
+    worst_vol_idx = int(np.argmax(np.sqrt(np.diag(cov))))
+    corr_no_diag = corr_full.where(~np.eye(len(corr_full), dtype=bool))
+    max_pair = corr_no_diag.stack().idxmax()
+    min_pair = corr_no_diag.stack().idxmin()
+
+    syn_col1, syn_col2 = st.columns(2)
+    with syn_col1:
+        st.markdown(f"""
+- **Assets used:** {n} (requested {len(tickers)}, {len(dropped)} unavailable)
+- **Universe mix:** {", ".join(f"{v} {k}" for k, v in n_by_universe.items() if v > 0)}
+- **Full cached history:** {earliest} \u2192 {latest} (~{total_years:.1f} years)
+- **Window used this run:** {prices.index.min().date()} \u2192 {prices.index.max().date()} ({len(prices)} trading days) \u2014 {window_desc}
+        """)
+    with syn_col2:
+        st.markdown(f"""
+- **Highest annualized return:** {NAME_LOOKUP.get(assets[best_ret_idx], assets[best_ret_idx])} ({mean_rets[best_ret_idx]:.1%})
+- **Lowest annualized return:** {NAME_LOOKUP.get(assets[worst_ret_idx], assets[worst_ret_idx])} ({mean_rets[worst_ret_idx]:.1%})
+- **Most volatile:** {NAME_LOOKUP.get(assets[worst_vol_idx], assets[worst_vol_idx])} ({np.sqrt(np.diag(cov))[worst_vol_idx]:.1%} ann. vol)
+- **Most stable:** {NAME_LOOKUP.get(assets[best_vol_idx], assets[best_vol_idx])} ({np.sqrt(np.diag(cov))[best_vol_idx]:.1%} ann. vol)
+- **Most correlated pair:** {NAME_LOOKUP.get(max_pair[0], max_pair[0])} & {NAME_LOOKUP.get(max_pair[1], max_pair[1])} ({corr_no_diag.loc[max_pair]:.2f})
+- **Most diversifying pair:** {NAME_LOOKUP.get(min_pair[0], min_pair[0])} & {NAME_LOOKUP.get(min_pair[1], min_pair[1])} ({corr_no_diag.loc[min_pair]:.2f})
+        """)
+    st.caption(
+        "This synopsis summarizes what was actually fetched and computed for this run \u2014 useful for sanity-checking "
+        "the dataset before trusting the optimization results below. The full history stays cached for 24h regardless "
+        "of which window is analyzed here."
+    )
 
     st.subheader(f"1. Historical Statistics ({n} assets)")
     stats_df = pd.DataFrame({
@@ -519,12 +534,13 @@ else:
         "- **Top 100 US Stocks** by market cap (NVDA, AAPL, MSFT, GOOGL...)\n"
         "- **Top 100 India (NSE) Stocks** by market cap (RELIANCE.NS, HDFCBANK.NS, TCS.NS...)\n"
         "- **Top 50 US Mutual Funds** by AUM (VTSAX, VFIAX, FXAIX...)\n"
-        "- **Top 50 India ETFs** (substituting Indian mutual funds, which have no Yahoo Finance data \u2014 "
-        "NIFTYBEES.NS, GOLDBEES.NS, BANKBEES.NS...)\n\n"
+        "- **Top 50 India ETFs** (NIFTYBEES.NS, GOLDBEES.NS, BANKBEES.NS...)\n\n"
         "You can mix and match across universes, or add custom tickers, up to a **100-asset cap** per optimization run.\n\n"
         "\U0001F4C5 **Full-history data policy:** every ticker's entire available price history (from listing date to "
         "today) is fetched and cached for 24 hours. As each new trading day and year passes, the next cache refresh "
         "automatically includes it \u2014 no manual update needed \u2014 while every year already fetched remains part "
         "of the same permanent series. Use the 'Years of full history to use' slider to optionally focus the "
-        "optimization on a recent window without ever discarding the full cached dataset."
+        "optimization on a recent window without ever discarding the full cached dataset.\n\n"
+        "After running, a **Data Synopsis** section summarizes exactly what was fetched: date ranges, best/worst "
+        "performers, and correlation extremes, before you review the full optimization results."
     )
