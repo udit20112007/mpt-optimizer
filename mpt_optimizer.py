@@ -3,7 +3,7 @@ Modern Portfolio Theory (MPT) Optimizer
 -----------------------------------------
 Proves: Linear Algebra (covariance/matrix ops), Monte Carlo simulation,
 and constrained optimization (SciPy SLSQP) applied to the Markowitz
-Efficient Frontier.
+Efficient Frontier, plus out-of-sample backtesting against a benchmark.
 
 Universe: Top 100 US stocks, Top 100 India (NSE) stocks, Top 50 US mutual
 funds, and Top 50 India-listed ETFs.
@@ -16,21 +16,25 @@ Ticker rename notes (Yahoo Finance only serves data under CURRENT symbols):
 
 Search UX:
     All 300 tickers across every universe are combined into ONE searchable
-    list. Streamlit's multiselect has built-in fuzzy-search-as-you-type, so
-    typing a partial ticker OR partial company name (e.g. "reliance",
-    "appl", "nifty bank") filters the dropdown live. A separate free-text
-    box remains for any ticker not in the built-in universe.
+    list with Streamlit's built-in fuzzy-search-as-you-type.
 
-A hard cap of 100 assets per optimization run is enforced regardless of
-how many are selected.
+A hard cap of 100 assets per optimization run is enforced.
 
 Data policy \u2014 full history, always growing, never shrinking:
-    The app fetches each ticker's FULL available price history (from its
-    IPO/listing date to today, via yfinance period="max"), cached 24h.
+    Fetches each ticker's FULL available price history (period="max"),
+    cached 24h, automatically extending as new years pass.
 
 Custom analysis window (years + as-of date):
-    Pick both a number of years AND an "as of" end date to run point-in-time
+    Pick both a number of years AND an "as of" end date for point-in-time
     historical analysis, slicing the cached full history without discarding it.
+
+Backtesting (NEW):
+    Splits the analysis window into an in-sample training period and an
+    out-of-sample test period. Optimizes weights using ONLY the training
+    period, then freezes those weights and simulates their real
+    performance over the test period \u2014 the standard way to check whether
+    an optimization is genuinely predictive or just curve-fit to history.
+    Compares against an equal-weight benchmark over the same test period.
 
 Run locally:
     pip install streamlit yfinance numpy pandas scipy plotly
@@ -52,7 +56,7 @@ from scipy.optimize import minimize
 
 st.set_page_config(page_title="MPT Optimizer", layout="wide")
 st.title("\U0001F4C8 Modern Portfolio Theory (MPT) Optimizer")
-st.caption("Markowitz Efficient Frontier \u00b7 Monte Carlo Simulation \u00b7 SLSQP Optimization \u00b7 Full-History US + India Universe")
+st.caption("Markowitz Efficient Frontier \u00b7 Monte Carlo Simulation \u00b7 SLSQP Optimization \u00b7 Out-of-Sample Backtesting")
 
 MAX_ASSETS = 100  # hard cap per optimization run
 
@@ -173,10 +177,6 @@ for _uname, _u in ALL_UNIVERSES.items():
     for _tk in _u:
         TICKER_UNIVERSE_LABEL[_tk] = _uname
 
-# Combined searchable directory: "TICKER \u2014 Company Name (Universe)"
-# Streamlit's multiselect/selectbox already do live fuzzy-matching against
-# these label strings as the user types, so no extra search component is
-# needed \u2014 typing "reliance", "appl", or "RELIANCE.NS" all work.
 SEARCH_DIRECTORY = {
     f"{tk} \u2014 {name} ({TICKER_UNIVERSE_LABEL[tk]})": tk
     for tk, name in sorted(NAME_LOOKUP.items(), key=lambda kv: kv[1])
@@ -188,8 +188,7 @@ st.sidebar.header("Configuration")
 st.sidebar.subheader("\U0001F50D Search & select assets")
 st.sidebar.caption(
     "Start typing a **company name** (e.g. \"reliance\", \"apple\") or a **ticker** "
-    "(e.g. \"AAPL\", \"TCS.NS\") \u2014 matching results filter live as you type, across "
-    "all 300 tickers in every universe."
+    "(e.g. \"AAPL\", \"TCS.NS\") \u2014 matching results filter live as you type."
 )
 search_selected_labels = st.sidebar.multiselect(
     "Search assets by name or ticker",
@@ -237,8 +236,8 @@ if tickers:
 
 st.sidebar.subheader("Historical window")
 st.sidebar.caption(
-    "The app always fetches each ticker's **full available history** (from listing date to today) "
-    "and caches it for 24h. The controls below only choose which slice of that cached data is used."
+    "The app always fetches each ticker's **full available history** and caches it for 24h. "
+    "The controls below only choose which slice of that cached data is used."
 )
 
 use_custom_asof = st.sidebar.checkbox(
@@ -254,7 +253,7 @@ else:
     asof_date = None
 
 analysis_years = st.sidebar.number_input(
-    "Years of history to use, counting back from the as-of date (0 = use everything available up to that date)",
+    "Years of history to use, counting back from the as-of date (0 = use everything available)",
     min_value=0.0, max_value=50.0, value=0.0, step=0.5
 )
 
@@ -262,6 +261,21 @@ n_portfolios = st.sidebar.number_input("Monte Carlo simulations", 1000, 200000, 
 risk_free_rate = st.sidebar.number_input("Risk-free rate (annual, decimal)", 0.0, 0.20, 0.065, step=0.005)
 allow_short = st.sidebar.checkbox("Allow short selling (weights can be negative)", value=False)
 max_weight = st.sidebar.slider("Max weight per asset (concentration cap)", 0.05, 1.0, 1.0, step=0.05)
+
+st.sidebar.subheader("\U0001F9EA Backtesting (out-of-sample)")
+st.sidebar.caption(
+    "Splits your analysis window into a training period (used to compute optimal weights) and a "
+    "held-out test period (used to see how those FROZEN weights actually perform). This checks "
+    "whether the optimization is genuinely predictive or just fit to past data."
+)
+run_backtest = st.sidebar.checkbox("Run out-of-sample backtest", value=False)
+if run_backtest:
+    test_fraction = st.sidebar.slider(
+        "Test period size (% of analysis window held out at the end)",
+        min_value=10, max_value=50, value=25, step=5
+    ) / 100.0
+else:
+    test_fraction = 0.25
 
 run_btn = st.sidebar.button("Run Optimization", type="primary")
 
@@ -380,6 +394,18 @@ def optimize_min_vol(mean_rets, cov, bounds, target_return=None):
                     bounds=bounds, constraints=cons, options={"maxiter": 500})
     return res
 
+def compute_drawdown(cum_returns):
+    running_max = cum_returns.cummax()
+    drawdown = (cum_returns - running_max) / running_max
+    return drawdown.min()
+
+def compute_sortino(daily_returns, rf_daily):
+    excess = daily_returns - rf_daily
+    downside = excess[excess < 0]
+    downside_std = downside.std() * np.sqrt(252) if len(downside) > 0 else np.nan
+    ann_excess = excess.mean() * 252
+    return ann_excess / downside_std if downside_std and downside_std > 0 else np.nan
+
 # ---------------- Main pipeline ----------------
 if run_btn:
     if len(tickers) < 2:
@@ -393,16 +419,14 @@ if run_btn:
     if dropped:
         st.warning(
             f"Could not fetch data for: {', '.join(sorted(dropped))} \u2014 excluded from optimization. "
-            "Yahoo Finance sometimes rate-limits large batch requests (HTTP 429), especially on shared cloud "
-            "IPs, or the ticker may have changed/delisted. Click **Run Optimization** again in 30\u201360 seconds, "
-            "or reduce the number of selected tickers."
+            "Yahoo Finance sometimes rate-limits large batch requests (HTTP 429), or the ticker may have "
+            "changed/delisted. Click **Run Optimization** again in 30\u201360 seconds, or reduce the selection."
         )
 
     if full_prices.empty or full_prices.shape[1] < 2:
         st.error(
-            "Could not fetch enough price data. This is almost always Yahoo Finance temporarily rate-limiting "
-            "requests, not a bug in the app. Wait about a minute and click **Run Optimization** again, try a "
-            "smaller ticker selection, or reduce Monte Carlo simulations to retry faster."
+            "Could not fetch enough price data. Wait about a minute and click **Run Optimization** again, "
+            "try a smaller ticker selection, or reduce Monte Carlo simulations to retry faster."
         )
         st.stop()
 
@@ -416,10 +440,7 @@ if run_btn:
     windowed = full_prices[full_prices.index <= effective_end]
 
     if windowed.empty:
-        st.error(
-            f"No data available on or before {effective_end.date()}. The earliest available data starts "
-            f"{earliest}. Pick a later as-of date."
-        )
+        st.error(f"No data available on or before {effective_end.date()}. Earliest data starts {earliest}.")
         st.stop()
 
     if analysis_years and analysis_years > 0:
@@ -430,10 +451,11 @@ if run_btn:
         prices = windowed.dropna(how="any")
         window_desc = f"everything available up to {effective_end.date()}"
 
-    if prices.shape[0] < 30:
+    min_days_needed = 60 if run_backtest else 30
+    if prices.shape[0] < min_days_needed:
         st.error(
-            f"Only {prices.shape[0]} trading days available in this window \u2014 too few for reliable statistics. "
-            "Pick a longer window, an earlier as-of date, or fewer years back."
+            f"Only {prices.shape[0]} trading days available in this window \u2014 too few for reliable statistics"
+            f"{' with backtesting enabled' if run_backtest else ''}. Pick a longer window or fewer years back."
         )
         st.stop()
 
@@ -477,10 +499,7 @@ if run_btn:
 - **Most correlated pair:** {NAME_LOOKUP.get(max_pair[0], max_pair[0])} & {NAME_LOOKUP.get(max_pair[1], max_pair[1])} ({corr_no_diag.loc[max_pair]:.2f})
 - **Most diversifying pair:** {NAME_LOOKUP.get(min_pair[0], min_pair[0])} & {NAME_LOOKUP.get(min_pair[1], min_pair[1])} ({corr_no_diag.loc[min_pair]:.2f})
         """)
-    st.caption(
-        "This synopsis reflects only the selected analysis window \u2014 useful for point-in-time comparisons. "
-        "The full history stays cached for 24h regardless of which window is analyzed here."
-    )
+    st.caption("This synopsis reflects only the selected analysis window. The full history stays cached for 24h.")
 
     st.subheader(f"1. Historical Statistics ({n} assets)")
     stats_df = pd.DataFrame({
@@ -495,15 +514,11 @@ if run_btn:
 
     st.subheader("2. Correlation Matrix (Heatmap)")
     fig_corr = go.Figure(data=go.Heatmap(
-        z=corr, x=assets, y=assets, colorscale="RdBu", zmid=0,
-        colorbar=dict(title="Corr")
+        z=corr, x=assets, y=assets, colorscale="RdBu", zmid=0, colorbar=dict(title="Corr")
     ))
     fig_corr.update_layout(height=min(22 * n + 100, 900), template="plotly_white")
     st.plotly_chart(fig_corr, use_container_width=True)
-    st.caption(
-        "Full annualized covariance is used internally for optimization; this heatmap shows "
-        "pairwise correlation for readability at this asset count."
-    )
+    st.caption("Full annualized covariance is used internally; this heatmap shows pairwise correlation for readability.")
 
     bounds = tuple((None, max_weight) if allow_short else (0.0, max_weight) for _ in range(n))
 
@@ -556,8 +571,7 @@ if run_btn:
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=vols_mc, y=rets_mc, mode="markers",
-        marker=dict(size=3, color=sharpe_mc, colorscale="Viridis",
-                    colorbar=dict(title="Sharpe"), showscale=True),
+        marker=dict(size=3, color=sharpe_mc, colorscale="Viridis", colorbar=dict(title="Sharpe"), showscale=True),
         name="Monte Carlo Portfolios", opacity=0.5
     ))
     fig.add_trace(go.Scatter(
@@ -575,29 +589,118 @@ if run_btn:
         name="Min Volatility Portfolio"
     ))
     fig.update_layout(
-        xaxis_title="Annualized Volatility (Risk)",
-        yaxis_title="Annualized Expected Return",
-        template="plotly_white", height=600,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02)
+        xaxis_title="Annualized Volatility (Risk)", yaxis_title="Annualized Expected Return",
+        template="plotly_white", height=600, legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
     st.plotly_chart(fig, use_container_width=True)
 
     st.caption(
         "Gold star = tangency portfolio (max Sharpe). Blue diamond = global minimum-variance portfolio. "
-        "Red curve = theoretical efficient frontier solved via constrained SLSQP optimization for each target return. "
-        f"Universe: {n} assets, analysis window: {window_desc}. Mixed currencies (USD/INR) are not FX-adjusted; "
-        "returns/volatility are computed independently per asset's native price series."
+        "Red curve = efficient frontier via SLSQP. "
+        f"Universe: {n} assets, analysis window: {window_desc}. Mixed currencies (USD/INR) are not FX-adjusted."
     )
+
+    # ---------------- 5. Out-of-sample backtest ----------------
+    if run_backtest:
+        st.subheader("5. \U0001F9EA Out-of-Sample Backtest")
+
+        split_idx = int(len(prices) * (1 - test_fraction))
+        train_prices = prices.iloc[:split_idx]
+        test_prices = prices.iloc[split_idx:]
+
+        if len(train_prices) < 30 or len(test_prices) < 10:
+            st.warning(
+                "Not enough data to split into a meaningful train/test period at this window size. "
+                "Try a longer analysis window or a smaller test period percentage."
+            )
+        else:
+            train_log_rets = np.log(train_prices / train_prices.shift(1)).dropna()
+            train_mean = (train_log_rets.mean() * 252).values
+            train_cov = (train_log_rets.cov() * 252).values
+
+            with st.spinner("Optimizing on training period and simulating out-of-sample performance..."):
+                w_train_sharpe = optimize_max_sharpe(train_mean, train_cov, risk_free_rate, bounds)
+                w_train_minvol = optimize_min_vol(train_mean, train_cov, bounds).x
+                w_equal = np.repeat(1 / n, n)
+
+                test_log_rets = np.log(test_prices / test_prices.shift(1)).dropna()
+
+                def portfolio_cum_return(weights, daily_rets):
+                    port_daily = daily_rets @ weights
+                    cum = (1 + port_daily).cumprod()
+                    return port_daily, cum
+
+                pd_ms, cum_ms = portfolio_cum_return(w_train_sharpe, test_log_rets)
+                pd_mv, cum_mv = portfolio_cum_return(w_train_minvol, test_log_rets)
+                pd_eq, cum_eq = portfolio_cum_return(w_equal, test_log_rets)
+
+                rf_daily = risk_free_rate / 252
+
+                bt_results = pd.DataFrame({
+                    "Strategy": ["Max Sharpe (trained)", "Min Volatility (trained)", "Equal-Weight Benchmark"],
+                    "Test-Period Return": [cum_ms.iloc[-1] - 1, cum_mv.iloc[-1] - 1, cum_eq.iloc[-1] - 1],
+                    "Test-Period Ann. Vol": [
+                        pd_ms.std() * np.sqrt(252), pd_mv.std() * np.sqrt(252), pd_eq.std() * np.sqrt(252)
+                    ],
+                    "Max Drawdown": [
+                        compute_drawdown(cum_ms), compute_drawdown(cum_mv), compute_drawdown(cum_eq)
+                    ],
+                    "Sortino Ratio": [
+                        compute_sortino(pd_ms, rf_daily), compute_sortino(pd_mv, rf_daily), compute_sortino(pd_eq, rf_daily)
+                    ],
+                })
+
+            st.markdown(
+                f"**Training period:** {train_prices.index.min().date()} \u2192 {train_prices.index.max().date()} "
+                f"({len(train_prices)} days) \u2014 weights optimized here, then FROZEN.\n\n"
+                f"**Test period (out-of-sample):** {test_prices.index.min().date()} \u2192 {test_prices.index.max().date()} "
+                f"({len(test_prices)} days) \u2014 frozen weights applied here, unseen during optimization."
+            )
+
+            st.dataframe(
+                bt_results.style.format({
+                    "Test-Period Return": "{:.2%}", "Test-Period Ann. Vol": "{:.2%}",
+                    "Max Drawdown": "{:.2%}", "Sortino Ratio": "{:.3f}"
+                }),
+                hide_index=True
+            )
+
+            fig_bt = go.Figure()
+            fig_bt.add_trace(go.Scatter(x=cum_ms.index, y=(cum_ms - 1) * 100, name="Max Sharpe (trained)",
+                                          line=dict(color="gold", width=2.5)))
+            fig_bt.add_trace(go.Scatter(x=cum_mv.index, y=(cum_mv - 1) * 100, name="Min Volatility (trained)",
+                                          line=dict(color="blue", width=2.5)))
+            fig_bt.add_trace(go.Scatter(x=cum_eq.index, y=(cum_eq - 1) * 100, name="Equal-Weight Benchmark",
+                                          line=dict(color="gray", width=2, dash="dash")))
+            fig_bt.update_layout(
+                title="Out-of-Sample Cumulative Return (%)",
+                xaxis_title="Date", yaxis_title="Cumulative Return (%)",
+                template="plotly_white", height=500,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_bt, use_container_width=True)
+
+            best_strategy = bt_results.loc[bt_results["Test-Period Return"].idxmax(), "Strategy"]
+            beat_benchmark = bt_results.iloc[0]["Test-Period Return"] > bt_results.iloc[2]["Test-Period Return"]
+            st.caption(
+                f"**{best_strategy}** had the highest out-of-sample return in this test period. "
+                f"The Max Sharpe portfolio {'beat' if beat_benchmark else 'did NOT beat'} the equal-weight "
+                "benchmark here \u2014 a reminder that in-sample optimization can still underperform a naive "
+                "strategy out-of-sample, especially over short or unusual test windows. Max Drawdown shows the "
+                "worst peak-to-trough decline; Sortino Ratio penalizes only downside volatility (unlike Sharpe, "
+                "which penalizes all volatility equally)."
+            )
 else:
     st.info("Search for assets by name/ticker or pull a whole universe in the sidebar (max 100 per run), then click **Run Optimization**.")
     st.markdown(
-        "**\U0001F50D How search works:** type into the sidebar search box \u2014 it matches against both "
-        "**company names** and **ticker symbols** across all 300 available assets (Top 100 US Stocks, Top 100 "
-        "India Stocks, Top 50 US Mutual Funds, Top 50 India ETFs). For example, typing \"apple\" finds AAPL, "
-        "typing \"nifty bank\" finds the Bank Nifty ETF, and typing \"tcs\" finds Tata Consultancy Services.\n\n"
-        "You can also pull an entire universe at once, or add any custom ticker not in the built-in list.\n\n"
+        "**\U0001F50D How search works:** type into the sidebar search box \u2014 it matches company names and "
+        "ticker symbols across all 300 available assets.\n\n"
         "\U0001F4C5 **Full-history data policy:** every ticker's entire available price history is fetched and "
         "cached for 24 hours, automatically extending as new years pass.\n\n"
-        "\U0001F553 **Custom analysis window:** enable 'Use a custom as of end date' to run the optimization as "
-        "if today were an earlier date, combined with 'Years of history to use' for point-in-time analysis."
+        "\U0001F553 **Custom analysis window:** run the optimization as if today were an earlier date via "
+        "the as-of date and years-back controls.\n\n"
+        "\U0001F9EA **Backtesting:** enable 'Run out-of-sample backtest' to see how the optimized weights "
+        "would have actually performed on data NOT used to compute them, compared against an equal-weight "
+        "benchmark \u2014 the standard check for whether an optimization is genuinely predictive or just "
+        "curve-fit to its training window."
     )
