@@ -46,7 +46,10 @@ A hard cap of 100 assets per optimization run is enforced.
 
 Data policy \u2014 full history, always growing, never shrinking:
     Fetches each ticker's FULL available price history (period="max"),
-    cached 24h, automatically extending as new years pass.
+    cached 24h, automatically extending as new years pass. Tickers are
+    batched in groups of CHUNK_SIZE (20) per yf.download() call -- larger
+    batches mean fewer total Yahoo Finance requests, which can reduce (but
+    not eliminate) HTTP 429 rate-limit responses seen on large selections.
 
 Custom analysis window (years + as-of date):
     Pick both a number of years AND an "as of" end date for point-in-time
@@ -332,7 +335,7 @@ else:
 run_btn = st.sidebar.button("Run Optimization", type="primary")
 
 # ---------------- Data fetching (full history, robust to Yahoo rate limits) ----------------
-CHUNK_SIZE = 15
+CHUNK_SIZE = 20
 MAX_RETRIES = 3
 BASE_BACKOFF = 2.0
 
@@ -584,9 +587,6 @@ if run_btn:
         st.stop()
 
     if analysis_years and analysis_years > 0:
-        # Use a day-count Timedelta rather than pd.DateOffset(years=...): DateOffset
-        # requires an INTEGER year count internally (dateutil raises ValueError on
-        # fractional years like 2.5), but this slider allows half-year steps.
         cutoff = effective_end - pd.Timedelta(days=int(round(analysis_years * 365.25)))
         prices = windowed[windowed.index >= cutoff].dropna(how="any")
         window_desc = f"{analysis_years} year(s) ending {effective_end.date()} (requested)"
