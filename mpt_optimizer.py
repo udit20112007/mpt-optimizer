@@ -35,6 +35,10 @@ Data policy \u2014 full history, always growing, never shrinking:
 Custom analysis window (years + as-of date):
     Pick both a number of years AND an "as of" end date for point-in-time
     historical analysis, slicing the cached full history without discarding it.
+    The "years" input allows half-year steps (e.g. 2.5) -- this is converted
+    to a day-count offset (years * 365.25) rather than passed to
+    pd.DateOffset(years=...), since pandas/dateutil raise a ValueError on
+    non-integer year offsets ("Non-integer years and months are ambiguous").
     (Note: no error is raised if the actual usable window is shorter than
     requested due to a short-history ticker -- the history-length table
     in the Data Synopsis surfaces this information instead, without an
@@ -564,7 +568,10 @@ if run_btn:
         st.stop()
 
     if analysis_years and analysis_years > 0:
-        cutoff = effective_end - pd.DateOffset(years=analysis_years)
+        # Use a day-count Timedelta rather than pd.DateOffset(years=...): DateOffset
+        # requires an INTEGER year count internally (dateutil raises ValueError on
+        # fractional years like 2.5), but this slider allows half-year steps.
+        cutoff = effective_end - pd.Timedelta(days=int(round(analysis_years * 365.25)))
         prices = windowed[windowed.index >= cutoff].dropna(how="any")
         window_desc = f"{analysis_years} year(s) ending {effective_end.date()} (requested)"
     else:
