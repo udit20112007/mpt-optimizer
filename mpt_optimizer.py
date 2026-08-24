@@ -5,8 +5,13 @@ Proves: Linear Algebra (covariance/matrix ops), Monte Carlo simulation,
 and constrained optimization (SciPy SLSQP) applied to the Markowitz
 Efficient Frontier.
 
-Supports a large universe: Top 40 US stocks by market cap + Top 20 India
-(NSE) stocks by market cap, or any custom ticker list.
+Universe: Top 100 US stocks, Top 100 India (NSE) stocks, Top 50 US mutual
+funds, and Top 50 India-listed ETFs (substituted for Indian mutual funds,
+since Yahoo Finance/yfinance does not carry AMFI mutual fund NAV data).
+
+A hard cap of 100 assets per optimization run is enforced regardless of
+how many are selected, to keep Monte Carlo + SLSQP runtime and Yahoo
+Finance API load manageable.
 
 Run locally:
     pip install streamlit yfinance numpy pandas scipy plotly
@@ -35,71 +40,164 @@ from scipy.optimize import minimize
 
 st.set_page_config(page_title="MPT Optimizer", layout="wide")
 st.title("\U0001F4C8 Modern Portfolio Theory (MPT) Optimizer")
-st.caption("Markowitz Efficient Frontier \u00b7 Monte Carlo Simulation \u00b7 SLSQP Optimization \u00b7 US + India Universe")
+st.caption("Markowitz Efficient Frontier \u00b7 Monte Carlo Simulation \u00b7 SLSQP Optimization \u00b7 US + India, Stocks + Funds")
+
+MAX_ASSETS = 100  # hard cap per optimization run
 
 # ---------------- Static universes ----------------
-US_TOP40 = {
+US_TOP100 = {
     "NVDA": "NVIDIA", "AAPL": "Apple", "GOOGL": "Alphabet", "MSFT": "Microsoft",
-    "AMZN": "Amazon", "AVGO": "Broadcom", "META": "Meta Platforms", "TSLA": "Tesla",
-    "MU": "Micron Technology", "LLY": "Eli Lilly", "BRK-B": "Berkshire Hathaway",
-    "WMT": "Walmart", "AMD": "Advanced Micro Devices", "JPM": "JPMorgan Chase",
-    "ORCL": "Oracle", "XOM": "Exxon Mobil", "V": "Visa", "INTC": "Intel",
-    "JNJ": "Johnson & Johnson", "CSCO": "Cisco Systems", "MA": "Mastercard",
-    "HD": "Home Depot", "PG": "Procter & Gamble", "COST": "Costco",
-    "ABBV": "AbbVie", "NFLX": "Netflix", "BAC": "Bank of America", "KO": "Coca-Cola",
-    "PEP": "PepsiCo", "CVX": "Chevron", "TMO": "Thermo Fisher", "MRK": "Merck",
-    "ADBE": "Adobe", "CRM": "Salesforce", "ACN": "Accenture", "LIN": "Linde",
-    "MCD": "McDonald's", "ABT": "Abbott Labs", "WFC": "Wells Fargo", "DIS": "Disney",
+    "AMZN": "Amazon.com", "AVGO": "Broadcom", "TSLA": "Tesla", "META": "Meta Platforms",
+    "LLY": "Eli Lilly", "MU": "Micron Technology", "BRK-B": "Berkshire Hathaway", "JPM": "JPMorgan Chase",
+    "WMT": "Walmart", "AMD": "Advanced Micro Devices", "V": "Visa", "XOM": "Exxon Mobil",
+    "JNJ": "Johnson & Johnson", "MA": "Mastercard", "INTC": "Intel", "ABBV": "AbbVie",
+    "CSCO": "Cisco Systems", "PLTR": "Palantir Technologies", "BAC": "Bank of America", "ORCL": "Oracle",
+    "COST": "Costco Wholesale", "CVX": "Chevron", "KO": "Coca-Cola", "AMAT": "Applied Materials",
+    "CAT": "Caterpillar", "MRK": "Merck & Co", "GE": "GE Aerospace", "UNH": "UnitedHealth Group",
+    "MS": "Morgan Stanley", "PG": "Procter & Gamble", "HD": "Home Depot", "NFLX": "Netflix",
+    "DELL": "Dell Technologies", "GS": "Goldman Sachs Group", "PM": "Philip Morris International", "PANW": "Palo Alto Networks",
+    "RTX": "RTX Corp", "WFC": "Wells Fargo", "TXN": "Texas Instruments", "KLAC": "KLA Corp",
+    "ANET": "Arista Networks", "AMGN": "Amgen", "SNDK": "SanDisk", "TMO": "Thermo Fisher Scientific",
+    "AXP": "American Express", "LIN": "Linde", "IBM": "IBM", "C": "Citigroup",
+    "MRVL": "Marvell Technology", "VZ": "Verizon Communications", "TMUS": "T-Mobile US", "PEP": "PepsiCo",
+    "CRWD": "CrowdStrike Holdings", "ABT": "Abbott Labs", "SCHW": "Charles Schwab", "APH": "Amphenol",
+    "MCD": "McDonald's", "DIS": "Walt Disney", "UNP": "Union Pacific", "SCCO": "Southern Copper",
+    "ADI": "Analog Devices", "GILD": "Gilead Sciences", "BLK": "BlackRock", "DE": "Deere & Co",
+    "NEE": "NextEra Energy", "T": "AT&T", "WELL": "Welltower", "CRM": "Salesforce",
+    "BA": "Boeing", "QCOM": "Qualcomm", "WDC": "Western Digital", "LRCX": "Lam Research",
+    "LOW": "Lowe's", "SPGI": "S&P Global", "BKNG": "Booking Holdings", "ADBE": "Adobe",
+    "NOW": "ServiceNow", "ISRG": "Intuitive Surgical", "SYK": "Stryker", "TJX": "TJX Companies",
+    "VRTX": "Vertex Pharmaceuticals", "PGR": "Progressive Corp", "BSX": "Boston Scientific", "ETN": "Eaton Corp",
+    "MMC": "Marsh & McLennan", "PYPL": "PayPal Holdings", "ADP": "Automatic Data Processing", "CB": "Chubb",
+    "MDT": "Medtronic", "CI": "Cigna Group", "SO": "Southern Co", "REGN": "Regeneron Pharmaceuticals",
+    "DUK": "Duke Energy", "ELV": "Elevance Health", "ICE": "Intercontinental Exchange", "APD": "Air Products",
 }
 
-INDIA_TOP20 = {
-    "RELIANCE.NS": "Reliance Industries", "BHARTIARTL.NS": "Bharti Airtel",
-    "HDFCBANK.NS": "HDFC Bank", "ICICIBANK.NS": "ICICI Bank",
-    "SBIN.NS": "State Bank of India", "TCS.NS": "Tata Consultancy Services",
-    "BAJFINANCE.NS": "Bajaj Finance", "LT.NS": "Larsen & Toubro",
-    "LICI.NS": "Life Insurance Corp of India", "HINDUNILVR.NS": "Hindustan Unilever",
-    "INFY.NS": "Infosys", "ITC.NS": "ITC", "KOTAKBANK.NS": "Kotak Mahindra Bank",
-    "AXISBANK.NS": "Axis Bank", "MARUTI.NS": "Maruti Suzuki",
-    "SUNPHARMA.NS": "Sun Pharma", "HCLTECH.NS": "HCL Technologies",
-    "ADANIENT.NS": "Adani Enterprises", "ULTRACEMCO.NS": "UltraTech Cement",
-    "NTPC.NS": "NTPC",
+INDIA_TOP100 = {
+    "RELIANCE.NS": "Reliance Industries", "BHARTIARTL.NS": "Bharti Airtel", "HDFCBANK.NS": "HDFC Bank",
+    "ICICIBANK.NS": "ICICI Bank", "SBIN.NS": "State Bank of India", "TCS.NS": "Tata Consultancy Services",
+    "BAJFINANCE.NS": "Bajaj Finance", "LT.NS": "Larsen & Toubro", "HINDUNILVR.NS": "Hindustan Unilever",
+    "SUNPHARMA.NS": "Sun Pharmaceutical", "INFY.NS": "Infosys", "TITAN.NS": "Titan Company",
+    "ADANIENT.NS": "Adani Enterprises", "MARUTI.NS": "Maruti Suzuki", "M&M.NS": "Mahindra & Mahindra",
+    "KOTAKBANK.NS": "Kotak Mahindra Bank", "ADANIPOWER.NS": "Adani Power", "ADANIPORTS.NS": "Adani Ports & SEZ",
+    "AXISBANK.NS": "Axis Bank", "HCLTECH.NS": "HCL Technologies", "ITC.NS": "ITC", "NTPC.NS": "NTPC",
+    "ULTRACEMCO.NS": "UltraTech Cement", "LICI.NS": "Life Insurance Corp of India", "WIPRO.NS": "Wipro",
+    "ONGC.NS": "Oil & Natural Gas Corp", "POWERGRID.NS": "Power Grid Corp", "BAJAJFINSV.NS": "Bajaj Finserv",
+    "ASIANPAINT.NS": "Asian Paints", "NESTLEIND.NS": "Nestle India", "COALINDIA.NS": "Coal India",
+    "TATAMOTORS.NS": "Tata Motors", "JSWSTEEL.NS": "JSW Steel", "TATASTEEL.NS": "Tata Steel", "GRASIM.NS": "Grasim Industries",
+    "TECHM.NS": "Tech Mahindra", "HINDALCO.NS": "Hindalco Industries", "BAJAJ-AUTO.NS": "Bajaj Auto",
+    "DRREDDY.NS": "Dr. Reddy's Labs", "CIPLA.NS": "Cipla", "EICHERMOT.NS": "Eicher Motors", "APOLLOHOSP.NS": "Apollo Hospitals",
+    "SBILIFE.NS": "SBI Life Insurance", "HDFCLIFE.NS": "HDFC Life Insurance", "DIVISLAB.NS": "Divi's Laboratories",
+    "BRITANNIA.NS": "Britannia Industries", "INDUSINDBK.NS": "IndusInd Bank", "VEDL.NS": "Vedanta",
+    "SHREECEM.NS": "Shree Cement", "PIDILITIND.NS": "Pidilite Industries", "HAVELLS.NS": "Havells India",
+    "DABUR.NS": "Dabur India", "GODREJCP.NS": "Godrej Consumer Products", "TATACONSUM.NS": "Tata Consumer Products",
+    "AMBUJACEM.NS": "Ambuja Cements", "BANKBARODA.NS": "Bank of Baroda", "PNB.NS": "Punjab National Bank",
+    "CANBK.NS": "Canara Bank", "IOC.NS": "Indian Oil Corp", "BPCL.NS": "Bharat Petroleum",
+    "GAIL.NS": "GAIL India", "SIEMENS.NS": "Siemens Ltd", "ABB.NS": "ABB India", "CGPOWER.NS": "CG Power & Industrial",
+    "SOLARINDS.NS": "Solar Industries India", "HAL.NS": "Hindustan Aeronautics", "BEL.NS": "Bharat Electronics",
+    "MAZDOCK.NS": "Mazagon Dock Shipbuilders", "IRFC.NS": "Indian Railway Finance Corp", "ZOMATO.NS": "Eternal (Zomato)",
+    "PAYTM.NS": "One 97 Communications", "NYKAA.NS": "FSN E-Commerce (Nykaa)", "DMART.NS": "Avenue Supermarts",
+    "TRENT.NS": "Trent Ltd", "PGHH.NS": "Procter & Gamble Hygiene", "COLPAL.NS": "Colgate-Palmolive India",
+    "MCDOWELL-N.NS": "United Spirits", "VBL.NS": "Varun Beverages", "PAGEIND.NS": "Page Industries",
+    "MOTHERSON.NS": "Samvardhana Motherson", "BOSCHLTD.NS": "Bosch Ltd", "TVSMOTOR.NS": "TVS Motor Co",
+    "HEROMOTOCO.NS": "Hero MotoCorp", "BALKRISIND.NS": "Balkrishna Industries", "MRF.NS": "MRF Ltd",
+    "LUPIN.NS": "Lupin Ltd", "AUROPHARMA.NS": "Aurobindo Pharma", "TORNTPHARM.NS": "Torrent Pharmaceuticals",
+    "ALKEM.NS": "Alkem Laboratories", "BIOCON.NS": "Biocon Ltd", "MPHASIS.NS": "Mphasis Ltd",
+    "LTIM.NS": "LTIMindtree", "PERSISTENT.NS": "Persistent Systems", "COFORGE.NS": "Coforge Ltd",
+    "OBEROIRLTY.NS": "Oberoi Realty", "DLF.NS": "DLF Ltd", "GODREJPROP.NS": "Godrej Properties",
+    "INDIGO.NS": "InterGlobe Aviation", "JUBLFOOD.NS": "Jubilant FoodWorks", "POLYCAB.NS": "Polycab India",
+    "ASTRAL.NS": "Astral Ltd", "SRF.NS": "SRF Ltd", "UPL.NS": "UPL Ltd", "PIIND.NS": "PI Industries",
 }
 
-FULL_UNIVERSE = {**US_TOP40, **INDIA_TOP20}
+US_FUNDS_50 = {
+    "VTSAX": "Vanguard Total Stock Market Index", "VFIAX": "Vanguard 500 Index", "FXAIX": "Fidelity 500 Index", "VTIAX": "Vanguard Total International Stock Index",
+    "VBTLX": "Vanguard Total Bond Market Index", "SPAXX": "Fidelity Government Money Market", "VIGAX": "Vanguard Growth Index", "FCNTX": "Fidelity Contrafund",
+    "FZCXX": "Fidelity Government Cash Reserves", "VINIX": "Vanguard Institutional Index", "VTWAX": "Vanguard Total World Stock Index", "VWENX": "Vanguard Wellington",
+    "VBIAX": "Vanguard Balanced Index", "VIMAX": "Vanguard Mid-Cap Index", "FCTDX": "Strategic Advisers Fidelity US Total Stock", "VVIAX": "Vanguard Value Index",
+    "DODGX": "Dodge & Cox Stock", "VSMAX": "Vanguard Small-Cap Index", "VTABX": "Vanguard International Bond Index", "TRBCX": "T. Rowe Price Blue Chip Growth",
+    "AGTHX": "American Funds Growth Fund of America", "AIVSX": "American Funds Investment Co of America", "AWSHX": "American Funds Washington Mutual", "ANCFX": "American Funds Fundamental Investors",
+    "ANWPX": "American Funds New Perspective", "CWGIX": "American Funds Capital World Growth & Income", "PTTRX": "PIMCO Total Return", "VWNDX": "Vanguard Windsor",
+    "VWELX": "Vanguard Wellington Investor", "VGSLX": "Vanguard Real Estate Index", "VEXAX": "Vanguard Extended Market Index", "VTMFX": "Vanguard Tax-Managed Balanced",
+    "VHGEX": "Vanguard Global Equity", "VEMAX": "Vanguard Emerging Markets Stock Index", "VDIGX": "Vanguard Dividend Growth", "VWUSX": "Vanguard US Growth",
+    "VPMAX": "Vanguard PRIMECAP", "FDGRX": "Fidelity Growth Company", "FBGRX": "Fidelity Blue Chip Growth", "FLPSX": "Fidelity Low-Priced Stock",
+    "FDVLX": "Fidelity Value", "FMAGX": "Fidelity Magellan", "FSKAX": "Fidelity Total Market Index", "FTIHX": "Fidelity Total International Index",
+    "FSPGX": "Fidelity Large Cap Growth Index", "FXNAX": "Fidelity US Bond Index", "JABAX": "Janus Henderson Balanced", "JAENX": "Janus Henderson Enterprise",
+    "MEIKX": "MFS Massachusetts Investors Trust", "OAKBX": "Oakmark Equity & Income",
+}
+
+# Note: Yahoo Finance / yfinance does not carry Indian mutual fund NAVs
+# (those live with AMFI, not Yahoo). This bucket uses India-listed ETFs
+# instead, which trade on NSE with real tickers yfinance can fetch.
+INDIA_ETFS_50 = {
+    "NIFTYBEES.NS": "Nippon India ETF Nifty BeES", "JUNIORBEES.NS": "Nippon India ETF Junior BeES", "BANKBEES.NS": "Nippon India ETF Bank BeES", "GOLDBEES.NS": "Nippon India ETF Gold BeES",
+    "ICICINIFTY.NS": "ICICI Prudential Nifty ETF", "HDFCNIFTY.NS": "HDFC Nifty 50 ETF", "SBINIFTY.NS": "SBI Nifty 50 ETF", "UTINIFTETF.NS": "UTI Nifty 50 ETF",
+    "KOTAKNIFTY.NS": "Kotak Nifty ETF", "AXISNIFTY.NS": "Axis Nifty ETF", "ICICIB22.NS": "ICICI Prudential Bharat 22 ETF", "ITBEES.NS": "Nippon India ETF Nifty IT",
+    "PSUBNKBEES.NS": "Nippon India ETF PSU Bank BeES", "MON100.NS": "Motilal Oswal Nasdaq 100 ETF", "MAFANG.NS": "Mirae Asset NYSE FANG+ ETF", "CPSE.NS": "CPSE ETF",
+    "LIQUIDBEES.NS": "Nippon India ETF Liquid BeES", "SILVERBEES.NS": "Nippon India ETF Silver BeES", "HNGSNGBEES.NS": "Nippon India ETF Hang Seng BeES", "INFRABEES.NS": "Nippon India ETF Infra BeES",
+    "PVTBANKIETF.NS": "ICICI Prudential Private Banks ETF", "MIDCAPETF.NS": "Motilal Oswal Midcap 150 ETF", "NV20.NS": "Nippon India ETF Nifty 50 Value 20", "LOWVOLIETF.NS": "ICICI Prudential Nifty Low Vol 30 ETF",
+    "ALPHA.NS": "Nippon India ETF Nifty Alpha 50", "QUAL30IETF.NS": "ICICI Prudential Nifty200 Quality 30 ETF", "MOM30IETF.NS": "ICICI Prudential Nifty200 Momentum 30 ETF", "HDFCSML250.NS": "HDFC Nifty Smallcap 250 ETF",
+    "MOM100.NS": "Motilal Oswal Nifty Midcap 100 ETF", "NEXT50IETF.NS": "ICICI Prudential Nifty Next 50 ETF", "SETFNIF50.NS": "SBI ETF Nifty 50", "SETFNIFBK.NS": "SBI ETF Nifty Bank",
+    "HDFCPVTBAN.NS": "HDFC Nifty Private Bank ETF", "GOLDSHARE.NS": "UTI Gold ETF", "AXISGOLD.NS": "Axis Gold ETF", "SBIETFQLTY.NS": "SBI Nifty Quality ETF",
+    "ABSLNN50ET.NS": "Aditya Birla SL Nifty 50 ETF", "EQUAL50.NS": "Nippon India Nifty 50 Equal Weight ETF", "MOSMALL250.NS": "Motilal Oswal Nifty Smallcap 250 ETF", "MOHEALTH.NS": "Motilal Oswal Healthcare ETF",
+    "MOMOMENTUM.NS": "Motilal Oswal Nifty200 Momentum 30 ETF", "LICNETFSEN.NS": "LIC MF Sensex ETF", "HDFCSENSEX.NS": "HDFC Sensex ETF", "SBISENSEX.NS": "SBI ETF Sensex",
+    "UTISENSETF.NS": "UTI Sensex ETF", "TATAGOLD.NS": "Tata Gold ETF", "QGOLDHALF.NS": "Quantum Gold Fund", "AUTOBEES.NS": "Nippon India ETF Nifty Auto",
+    "CONSUMBEES.NS": "Nippon India ETF Nifty India Consumption", "PHARMABEES.NS": "Nippon India ETF Nifty Pharma", "METALIETF.NS": "ICICI Prudential Nifty Metal ETF", "FMCGIETF.NS": "ICICI Prudential Nifty FMCG ETF",
+}
+
+ALL_UNIVERSES = {
+    "Top 100 US Stocks": US_TOP100,
+    "Top 100 India (NSE) Stocks": INDIA_TOP100,
+    "Top 50 US Mutual Funds": US_FUNDS_50,
+    "Top 50 India ETFs (fund substitute)": INDIA_ETFS_50,
+}
+NAME_LOOKUP = {}
+for _u in ALL_UNIVERSES.values():
+    NAME_LOOKUP.update(_u)
 
 # ---------------- Sidebar inputs ----------------
 st.sidebar.header("Configuration")
-
-universe_choice = st.sidebar.radio(
-    "Ticker universe",
-    ["Top 40 US + Top 20 India (60 total)", "Top 40 US only", "Top 20 India only", "Custom list"],
+st.sidebar.caption(
+    "\u26A0\uFE0F Indian mutual funds (AMFI NAVs) are not available on Yahoo Finance / yfinance. "
+    "The 'India ETFs' bucket substitutes NSE-listed ETFs, which do have real tickers and price history."
 )
 
-if universe_choice == "Top 40 US + Top 20 India (60 total)":
-    candidate_map = FULL_UNIVERSE
-elif universe_choice == "Top 40 US only":
-    candidate_map = US_TOP40
-elif universe_choice == "Top 20 India only":
-    candidate_map = INDIA_TOP20
-else:
-    candidate_map = None
+bucket_choices = st.sidebar.multiselect(
+    "Select one or more universes to pull tickers from",
+    list(ALL_UNIVERSES.keys()),
+    default=["Top 100 US Stocks"]
+)
 
-if candidate_map is not None:
+candidate_map = {}
+for b in bucket_choices:
+    candidate_map.update(ALL_UNIVERSES[b])
+
+if candidate_map:
     options = [f"{tk} \u2014 {name}" for tk, name in candidate_map.items()]
-    default_sel = options  # select all by default
     selected_labels = st.sidebar.multiselect(
-        "Select assets (defaults to full list; deselect to narrow down)",
-        options, default=default_sel
+        f"Select assets ({len(options)} available across chosen universes)",
+        options, default=options
     )
     tickers = [lbl.split(" \u2014 ")[0] for lbl in selected_labels]
 else:
-    custom_input = st.sidebar.text_area(
-        "Enter tickers, comma-separated (use .NS suffix for NSE-listed India stocks, e.g. INFY.NS)",
-        "AAPL, MSFT, JPM, JNJ, XOM"
-    )
-    tickers = [t.strip().upper() for t in custom_input.split(",") if t.strip()]
+    tickers = []
 
-st.sidebar.caption(f"**{len(tickers)} assets selected**")
+use_custom = st.sidebar.checkbox("Add custom tickers manually")
+if use_custom:
+    custom_input = st.sidebar.text_area(
+        "Extra tickers, comma-separated (.NS suffix for NSE stocks, e.g. INFY.NS)", ""
+    )
+    extra = [t.strip().upper() for t in custom_input.split(",") if t.strip()]
+    tickers = list(dict.fromkeys(tickers + extra))
+
+n_selected = len(tickers)
+if n_selected > MAX_ASSETS:
+    st.sidebar.error(
+        f"You selected {n_selected} assets, but only {MAX_ASSETS} can be optimized per run. "
+        f"The first {MAX_ASSETS} (in selection order) will be used \u2014 narrow your selection for full control."
+    )
+    tickers = tickers[:MAX_ASSETS]
+
+st.sidebar.caption(f"**{len(tickers)} / {MAX_ASSETS} assets selected for this run**")
 
 years_back = st.sidebar.slider("Years of history", 1, 10, 3)
 n_portfolios = st.sidebar.number_input("Monte Carlo simulations", 1000, 200000, 50000, step=1000)
@@ -110,9 +208,9 @@ max_weight = st.sidebar.slider("Max weight per asset (concentration cap)", 0.05,
 run_btn = st.sidebar.button("Run Optimization", type="primary")
 
 # ---------------- Data fetching (robust to Yahoo rate limits) ----------------
-CHUNK_SIZE = 15          # keep batch requests small to reduce 429s
+CHUNK_SIZE = 15
 MAX_RETRIES = 3
-BASE_BACKOFF = 2.0        # seconds, doubles each retry
+BASE_BACKOFF = 2.0
 
 def _extract_close(df, tk):
     if df is None or df.empty:
@@ -134,15 +232,14 @@ def _extract_close(df, tk):
     return None
 
 def _download_chunk(chunk, start, end):
-    last_err = None
     for attempt in range(MAX_RETRIES):
         try:
             data = yf.download(chunk, start=start, end=end, auto_adjust=True,
                                 progress=False, group_by="ticker", threads=True)
             if data is not None and not data.empty:
                 return data
-        except Exception as e:
-            last_err = e
+        except Exception:
+            pass
         time.sleep(BASE_BACKOFF * (2 ** attempt))
     return None
 
@@ -262,9 +359,8 @@ if run_btn:
     corr = log_returns.corr().values
 
     st.subheader(f"1. Historical Statistics ({n} assets)")
-    name_lookup = {**US_TOP40, **INDIA_TOP20}
     stats_df = pd.DataFrame({
-        "Name": [name_lookup.get(a, a) for a in assets],
+        "Name": [NAME_LOOKUP.get(a, a) for a in assets],
         "Annualized Return": mean_rets,
         "Annualized Volatility": np.sqrt(np.diag(cov))
     }, index=assets)
@@ -278,7 +374,7 @@ if run_btn:
         z=corr, x=assets, y=assets, colorscale="RdBu", zmid=0,
         colorbar=dict(title="Corr")
     ))
-    fig_corr.update_layout(height=min(28 * n + 100, 800), template="plotly_white")
+    fig_corr.update_layout(height=min(22 * n + 100, 900), template="plotly_white")
     st.plotly_chart(fig_corr, use_container_width=True)
     st.caption(
         "Full annualized covariance is used internally for optimization; this heatmap shows "
@@ -365,14 +461,17 @@ if run_btn:
     st.caption(
         "Gold star = tangency portfolio (max Sharpe). Blue diamond = global minimum-variance portfolio. "
         "Red curve = theoretical efficient frontier solved via constrained SLSQP optimization for each target return. "
-        f"Universe: {n} assets \u2014 US large caps priced in USD, India (NSE) stocks priced in INR; "
-        "returns/volatility are computed independently per currency and not FX-adjusted."
+        f"Universe: {n} assets. Mixed currencies (USD/INR) are not FX-adjusted; returns/volatility are computed "
+        "independently per asset's native price series."
     )
 else:
-    st.info("Choose a universe and tickers in the sidebar, then click **Run Optimization**.")
+    st.info("Choose one or more universes and assets in the sidebar (max 100 per run), then click **Run Optimization**.")
     st.markdown(
-        "This app ships with two built-in universes: the **Top 40 US stocks** by market cap "
-        "(NVDA, AAPL, MSFT, GOOGL, AMZN...) and the **Top 20 India (NSE) stocks** by market cap "
-        "(RELIANCE.NS, HDFCBANK.NS, TCS.NS...), or you can combine both for a 60-asset universe, "
-        "or type in any custom ticker list."
+        "**Available universes:**\n"
+        "- **Top 100 US Stocks** by market cap (NVDA, AAPL, MSFT, GOOGL...)\n"
+        "- **Top 100 India (NSE) Stocks** by market cap (RELIANCE.NS, HDFCBANK.NS, TCS.NS...)\n"
+        "- **Top 50 US Mutual Funds** by AUM (VTSAX, VFIAX, FXAIX...)\n"
+        "- **Top 50 India ETFs** (substituting Indian mutual funds, which have no Yahoo Finance data \u2014 "
+        "NIFTYBEES.NS, GOLDBEES.NS, BANKBEES.NS...)\n\n"
+        "You can mix and match across universes, or add custom tickers, up to a **100-asset cap** per optimization run."
     )
