@@ -28,17 +28,24 @@ Custom analysis window (years + as-of date):
     Pick both a number of years AND an "as of" end date for point-in-time
     historical analysis, slicing the cached full history without discarding it.
 
+IMPORTANT \u2014 shortest-history ticker bottleneck (fixed):
+    Because all tickers must be aligned to a common date range, the analysis
+    window is capped by whichever SELECTED ticker has the SHORTEST available
+    history (e.g. a recently renamed/listed stock). Requesting "10 years" does
+    NOT override this \u2014 if one selected ticker only has 9 months of data,
+    the whole analysis window shrinks to 9 months regardless of the years-back
+    setting. The app now explicitly detects and reports this bottleneck ticker
+    in the Data Synopsis, and offers a checkbox to exclude short-history
+    tickers so the rest of the selection can use the full requested window.
+
 Backtesting:
     Splits the analysis window into an in-sample training period and an
     out-of-sample test period, freezing weights trained only on the past
     and comparing against an equal-weight benchmark.
 
-Plain-language chart summaries (NEW):
+Plain-language chart summaries:
     After the efficient frontier chart and (if enabled) the backtest chart,
-    the app auto-generates a short, jargon-free written takeaway describing
-    what the chart shows in everyday terms \u2014 e.g. how much risk reduction
-    diversification bought, and whether the optimized strategy actually beat
-    a simple naive strategy out-of-sample.
+    the app auto-generates a short, jargon-free written takeaway.
 
 Run locally:
     pip install streamlit yfinance numpy pandas scipy plotly
@@ -241,8 +248,21 @@ if tickers:
 st.sidebar.subheader("Historical window")
 st.sidebar.caption(
     "The app always fetches each ticker's **full available history** and caches it for 24h. "
-    "The controls below only choose which slice of that cached data is used."
+    "\u26A0\uFE0F The usable analysis window is capped by whichever selected ticker has the "
+    "SHORTEST history \u2014 e.g. a recently listed or renamed stock. This is reported below after you run."
 )
+
+exclude_short_history = st.sidebar.checkbox(
+    "Auto-exclude tickers with unusually short history (avoid shrinking the whole window)",
+    value=False
+)
+if exclude_short_history:
+    min_history_years = st.sidebar.number_input(
+        "Minimum years of history required to keep a ticker in this run",
+        min_value=0.1, max_value=20.0, value=2.0, step=0.5
+    )
+else:
+    min_history_years = 0.0
 
 use_custom_asof = st.sidebar.checkbox(
     "Use a custom 'as of' end date (point-in-time analysis)", value=False
@@ -411,7 +431,6 @@ def compute_sortino(daily_returns, rf_daily):
 
 def explain_frontier_plain_language(mean_rets, cov, w_max_sharpe, ret_ms, vol_ms, sharpe_ms,
                                       w_min_vol, ret_mv, vol_mv, assets, name_lookup, n, rf):
-    """Generate a jargon-free written takeaway for the efficient frontier chart."""
     single_vols = np.sqrt(np.diag(cov))
     avg_single_vol = single_vols.mean()
     risk_reduction = (avg_single_vol - vol_mv) / avg_single_vol if avg_single_vol > 0 else 0
@@ -450,7 +469,6 @@ def explain_frontier_plain_language(mean_rets, cov, w_max_sharpe, ret_ms, vol_ms
     return "\n\n".join(lines)
 
 def explain_backtest_plain_language(bt_results, best_strategy, beat_benchmark, test_days):
-    """Generate a jargon-free written takeaway for the backtest chart."""
     ms_row = bt_results.iloc[0]
     eq_row = bt_results.iloc[2]
     diff = ms_row["Test-Period Return"] - eq_row["Test-Period Return"]
@@ -476,8 +494,7 @@ def explain_backtest_plain_language(bt_results, best_strategy, beat_benchmark, t
     lines.append(
         f"**{best_strategy}** ended up being the best performer in this specific test window. Keep in mind "
         "this is just one test period \u2014 running the backtest with a different test period size or a "
-        "different as-of date can change which strategy comes out ahead, which itself is useful information "
-        "about how reliable (or fragile) the optimization is for this particular set of assets."
+        "different as-of date can change which strategy comes out ahead."
     )
     return "\n\n".join(lines)
 
@@ -505,6 +522,33 @@ if run_btn:
         )
         st.stop()
 
+    # ---- Diagnose per-ticker history length BEFORE alignment truncates everything ----
+    per_ticker_start = {tk: full_prices[tk].dropna().index.min() for tk in full_prices.columns}
+    per_ticker_years = {tk: (full_prices[tk].dropna().index.max() - start).days / 365.25
+                          for tk, start in per_ticker_start.items()}
+    global_latest = full_prices.index.max()
+
+    if exclude_short_history and min_history_years > 0:
+        short_tickers = [tk for tk, yrs in per_ticker_years.items() if yrs < min_history_years]
+        if short_tickers:
+            st.warning(
+                f"Excluded {len(short_tickers)} ticker(s) with less than {min_history_years} years of history: "
+                f"{', '.join(f'{tk} ({NAME_LOOKUP.get(tk, tk)}, {per_ticker_years[tk]:.1f}y)' for tk in short_tickers)}"
+            )
+            full_prices = full_prices.drop(columns=short_tickers)
+            per_ticker_start = {tk: v for tk, v in per_ticker_start.items() if tk not in short_tickers}
+            per_ticker_years = {tk: v for tk, v in per_ticker_years.items() if tk not in short_tickers}
+
+    if full_prices.empty or full_prices.shape[1] < 2:
+        st.error("Fewer than 2 tickers remain after excluding short-history assets. Adjust your filters.")
+        st.stop()
+
+    # Identify the bottleneck: whichever remaining ticker has the LATEST start date
+    # (i.e. the shortest history) sets the earliest possible common start for ALL assets.
+    bottleneck_ticker = max(per_ticker_start, key=per_ticker_start.get)
+    bottleneck_start = per_ticker_start[bottleneck_ticker]
+    bottleneck_years = per_ticker_years[bottleneck_ticker]
+
     earliest = full_prices.index.min().date()
     latest = full_prices.index.max().date()
     total_years = (full_prices.index.max() - full_prices.index.min()).days / 365.25
@@ -521,16 +565,31 @@ if run_btn:
     if analysis_years and analysis_years > 0:
         cutoff = effective_end - pd.DateOffset(years=analysis_years)
         prices = windowed[windowed.index >= cutoff].dropna(how="any")
-        window_desc = f"{analysis_years} year(s) ending {effective_end.date()}"
+        window_desc = f"{analysis_years} year(s) ending {effective_end.date()} (requested)"
     else:
         prices = windowed.dropna(how="any")
         window_desc = f"everything available up to {effective_end.date()}"
+
+    # Warn explicitly if the ALIGNED window ended up much shorter than requested
+    actual_window_years = (prices.index.max() - prices.index.min()).days / 365.25 if len(prices) > 1 else 0
+    if analysis_years and analysis_years > 0 and actual_window_years < analysis_years * 0.9:
+        st.error(
+            f"\u26A0\uFE0F **You requested {analysis_years} years, but the actual usable window is only "
+            f"~{actual_window_years:.1f} years.** This is because **{NAME_LOOKUP.get(bottleneck_ticker, bottleneck_ticker)} "
+            f"({bottleneck_ticker})** only has **{bottleneck_years:.1f} years** of price history available "
+            f"(starts {bottleneck_start.date()}), and every asset must share the same date range for the math "
+            "to work. The requested 'years back' setting cannot override this \u2014 it can only shrink the "
+            "window further, never extend it beyond what every selected ticker actually has.\n\n"
+            "**To fix this:** remove the short-history ticker from your selection, or enable "
+            "'Auto-exclude tickers with unusually short history' in the sidebar and re-run."
+        )
 
     min_days_needed = 60 if run_backtest else 30
     if prices.shape[0] < min_days_needed:
         st.error(
             f"Only {prices.shape[0]} trading days available in this window \u2014 too few for reliable statistics"
-            f"{' with backtesting enabled' if run_backtest else ''}. Pick a longer window or fewer years back."
+            f"{' with backtesting enabled' if run_backtest else ''}. Pick a longer window, fewer years back, "
+            "or remove short-history tickers from your selection."
         )
         st.stop()
 
@@ -561,9 +620,10 @@ if run_btn:
         st.markdown(f"""
 - **Assets used:** {n} (requested {len(tickers)}, {len(dropped)} unavailable)
 - **Universe mix:** {", ".join(f"{v} {k}" for k, v in n_by_universe.items() if v > 0)}
-- **Full cached history:** {earliest} \u2192 {latest} (~{total_years:.1f} years)
-- **Analysis window:** {window_desc}
-- **Actual data range used:** {prices.index.min().date()} \u2192 {prices.index.max().date()} ({len(prices)} trading days)
+- **Shortest-history ticker (sets the window cap):** {NAME_LOOKUP.get(bottleneck_ticker, bottleneck_ticker)} ({bottleneck_ticker}) \u2014 {bottleneck_years:.1f} years, starts {bottleneck_start.date()}
+- **Full cached history (all assets combined):** {earliest} \u2192 {latest} (~{total_years:.1f} years)
+- **Analysis window setting:** {window_desc}
+- **Actual data range used:** {prices.index.min().date()} \u2192 {prices.index.max().date()} ({len(prices)} trading days, ~{actual_window_years:.1f} years)
         """)
     with syn_col2:
         st.markdown(f"""
@@ -574,7 +634,11 @@ if run_btn:
 - **Most correlated pair:** {NAME_LOOKUP.get(max_pair[0], max_pair[0])} & {NAME_LOOKUP.get(max_pair[1], max_pair[1])} ({corr_no_diag.loc[max_pair]:.2f})
 - **Most diversifying pair:** {NAME_LOOKUP.get(min_pair[0], min_pair[0])} & {NAME_LOOKUP.get(min_pair[1], min_pair[1])} ({corr_no_diag.loc[min_pair]:.2f})
         """)
-    st.caption("This synopsis reflects only the selected analysis window. The full history stays cached for 24h.")
+    st.caption(
+        "The 'shortest-history ticker' line above is the #1 thing to check if your analysis window came out "
+        "shorter than expected \u2014 every asset must share the same date range, so one short-history ticker "
+        "caps the whole run. The full history stays cached for 24h regardless of this window."
+    )
 
     st.subheader(f"1. Historical Statistics ({n} assets)")
     stats_df = pd.DataFrame({
@@ -766,8 +830,7 @@ if run_btn:
             st.caption(
                 f"**{best_strategy}** had the highest out-of-sample return in this test period. "
                 f"The Max Sharpe portfolio {'beat' if beat_benchmark else 'did NOT beat'} the equal-weight "
-                "benchmark here \u2014 a reminder that in-sample optimization can still underperform a naive "
-                "strategy out-of-sample, especially over short or unusual test windows."
+                "benchmark here."
             )
 
             st.markdown("#### \U0001F4A1 What This Chart Means")
@@ -778,11 +841,12 @@ else:
         "**\U0001F50D How search works:** type into the sidebar search box \u2014 it matches company names and "
         "ticker symbols across all 300 available assets.\n\n"
         "\U0001F4C5 **Full-history data policy:** every ticker's entire available price history is fetched and "
-        "cached for 24 hours, automatically extending as new years pass.\n\n"
-        "\U0001F553 **Custom analysis window:** run the optimization as if today were an earlier date via "
-        "the as-of date and years-back controls.\n\n"
-        "\U0001F9EA **Backtesting:** enable 'Run out-of-sample backtest' to see how the optimized weights "
-        "would have actually performed on unseen data, compared against an equal-weight benchmark.\n\n"
-        "\U0001F4A1 **Plain-language takeaways:** after each chart, the app writes a short, jargon-free "
-        "summary explaining what the results actually mean \u2014 no finance background required."
+        "cached for 24 hours.\n\n"
+        "\u26A0\uFE0F **Important:** your analysis window is capped by whichever selected ticker has the "
+        "shortest available history. If you request 10 years but one ticker only IPO'd 9 months ago, the whole "
+        "run shrinks to 9 months. Use the 'Auto-exclude tickers with unusually short history' option to prevent "
+        "this, and check the Data Synopsis after each run for the exact bottleneck ticker.\n\n"
+        "\U0001F553 **Custom analysis window:** run the optimization as if today were an earlier date.\n\n"
+        "\U0001F9EA **Backtesting:** see how the optimized weights would have actually performed on unseen data.\n\n"
+        "\U0001F4A1 **Plain-language takeaways:** after each chart, a jargon-free summary of what it means."
     )
