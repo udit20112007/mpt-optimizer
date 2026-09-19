@@ -83,6 +83,3 @@ streamlit run mpt_optimizer.py
 - Add **sector/asset-class constraints** (e.g. max 40% in any single sector) to the SLSQP constraint set.
 - Support **rolling-window** re-optimization to visualize how the efficient frontier and optimal weights drift over time.
 
-## License
-
-MIT
